@@ -1,0 +1,276 @@
+import { Schema, model, Document, Types } from 'mongoose';
+
+export interface IPost extends Document {
+  _id: Types.ObjectId;
+  institution_id: string;
+  author_id: string;
+  type: 'post' | 'achievement' | 'trending' | 'news';
+  content?: string;
+  topic_tag?: string;
+  likes: string[];
+  comments_count: number;
+  is_deleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const PostSchema = new Schema<IPost>(
+  {
+    institution_id: { type: String, required: true, index: true },
+    author_id:      { type: String, required: true, index: true },
+    type:           { type: String, enum: ['post', 'achievement', 'trending', 'news'], default: 'post' },
+    content:        { type: String, maxlength: 500 },
+    topic_tag:      { type: String, index: true },
+    likes:          [{ type: String }],
+    comments_count: { type: Number, default: 0, min: 0 },
+    is_deleted:     { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
+PostSchema.index({ institution_id: 1, createdAt: -1 });
+PostSchema.index({ author_id: 1, createdAt: -1 });
+PostSchema.index({ topic_tag: 1, createdAt: -1 });
+PostSchema.index({ institution_id: 1, is_deleted: 1, createdAt: -1 });
+
+export const Post = model<IPost>('Post', PostSchema);
+
+
+export interface IComment extends Document {
+  _id: Types.ObjectId;
+  post_id: Types.ObjectId;
+  author_id: string;
+  parent_comment_id: Types.ObjectId | null;
+  body: string;
+  likes: string[];
+  is_deleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const CommentSchema = new Schema<IComment>(
+  {
+    post_id:           { type: Schema.Types.ObjectId, ref: 'Post', required: true, index: true },
+    author_id:         { type: String, required: true },
+    parent_comment_id: { type: Schema.Types.ObjectId, ref: 'Comment', default: null },
+    body:              { type: String, required: true, maxlength: 1000 },
+    likes:             [{ type: String }],
+    is_deleted:        { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
+CommentSchema.index({ post_id: 1, createdAt: 1 });
+CommentSchema.index({ parent_comment_id: 1 });
+
+export const Comment = model<IComment>('Comment', CommentSchema);
+
+
+export interface IMessage extends Document {
+  _id: Types.ObjectId;
+  institution_id: string;
+  sender_id: string;
+  receiver_id: string;
+  body: string;
+  is_deleted: boolean;
+  read_at: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MessageSchema = new Schema<IMessage>(
+  {
+    institution_id: { type: String, required: true, index: true },
+    sender_id:      { type: String, required: true },
+    receiver_id:    { type: String, required: true },
+    body:           { type: String, required: true, maxlength: 2000 },
+    is_deleted:     { type: Boolean, default: false },
+    read_at:        { type: Date, default: null },
+  },
+  { timestamps: true },
+);
+
+MessageSchema.index({ sender_id: 1, receiver_id: 1, createdAt: -1 });
+MessageSchema.index({ receiver_id: 1, read_at: 1 });
+
+export const Message = model<IMessage>('Message', MessageSchema);
+
+
+// Study-room chat (M5). Deliberately separate from the DM `Message` schema —
+// that one is DM-shaped (required receiver_id, sender/receiver indexes) and is
+// NOT overloaded for rooms. `room_id` references the PostgreSQL study_rooms uuid.
+export interface IRoomMessage extends Document {
+  _id: Types.ObjectId;
+  room_id: string;
+  institution_id: string;
+  sender_id: string;
+  body: string;
+  is_deleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const RoomMessageSchema = new Schema<IRoomMessage>(
+  {
+    room_id:        { type: String, required: true, index: true },
+    institution_id: { type: String, required: true, index: true },
+    sender_id:      { type: String, required: true },
+    body:           { type: String, required: true, maxlength: 2000 },
+    is_deleted:     { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
+RoomMessageSchema.index({ room_id: 1, createdAt: -1 });
+
+export const RoomMessage = model<IRoomMessage>('RoomMessage', RoomMessageSchema);
+
+
+export interface IAIFeedback extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  institution_id: string;
+  session_id?: string;
+  question_id?: string;
+  question_text?: string;
+  course_code?: string;
+  topic?: string;
+  chosen_answer?: string;
+  correct_answer?: string;
+  ai_explanation?: string;
+  model_used?: string;
+  tokens_used?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AIFeedbackSchema = new Schema<IAIFeedback>(
+  {
+    user_id:         { type: String, required: true, index: true },
+    institution_id:  { type: String, required: true },
+    session_id:      { type: String },
+    question_id:     { type: String },
+    question_text:   { type: String },
+    course_code:     { type: String },
+    topic:           { type: String },
+    chosen_answer:   { type: String },
+    correct_answer:  { type: String },
+    ai_explanation:  { type: String },
+    model_used:      { type: String },
+    tokens_used:     { type: Number },
+  },
+  { timestamps: true },
+);
+
+AIFeedbackSchema.index({ user_id: 1, createdAt: -1 });
+AIFeedbackSchema.index({ session_id: 1 });
+
+export const AIFeedback = model<IAIFeedback>('AIFeedback', AIFeedbackSchema);
+
+export interface IAIQuestion extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  institution_id: string;
+  topic: string;
+  question_type: 'mcq' | 'short_answer' | 'fill_blank';
+  question_text: string;
+  options?: Array<{ key: string; text: string }>;
+  correct_answer: string;
+  explanation?: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  quality_flag: 'good' | 'flagged';
+  flag_reason?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AIQuestionSchema = new Schema<IAIQuestion>(
+  {
+    user_id:        { type: String, required: true, index: true },
+    institution_id: { type: String, required: true },
+    topic:          { type: String, required: true },
+    question_type:  { type: String, enum: ['mcq', 'short_answer', 'fill_blank'], required: true },
+    question_text:  { type: String, required: true },
+    options:        [{ key: String, text: String }],
+    correct_answer: { type: String, required: true },
+    explanation:    { type: String },
+    difficulty:     { type: String, enum: ['easy', 'medium', 'hard'], required: true },
+    quality_flag:   { type: String, enum: ['good', 'flagged'], default: 'good' },
+    flag_reason:    { type: String },
+  },
+  { timestamps: true },
+);
+
+AIQuestionSchema.index({ user_id: 1, createdAt: -1 });
+AIQuestionSchema.index({ institution_id: 1, topic: 1 });
+
+export const AIQuestion = model<IAIQuestion>('AIQuestion', AIQuestionSchema);
+
+
+export interface IStudyPlanTask {
+  subject: string;
+  topic: string;
+  duration_mins: number;
+  activity_type: string;
+  recommended_question_set?: string;
+  completed: boolean;
+}
+
+export interface IStudyPlanDay {
+  day: string;
+  date: string;
+  tasks: IStudyPlanTask[];
+}
+
+export interface IStudyPlanWeek {
+  week_number: number;
+  days: IStudyPlanDay[];
+}
+
+export interface IStudyPlan extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  institution_id: string;
+  subjects: string[];
+  exam_date?: Date;
+  daily_hours?: number;
+  weeks: IStudyPlanWeek[];
+  milestones: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const StudyPlanSchema = new Schema<IStudyPlan>(
+  {
+    user_id:        { type: String, required: true, unique: true },
+    institution_id: { type: String, required: true },
+    subjects:       [String],
+    exam_date:      { type: Date },
+    daily_hours:    { type: Number },
+    weeks: [
+      {
+        week_number: Number,
+        days: [
+          {
+            day:  String,
+            date: String,
+            tasks: [
+              {
+                subject:                  String,
+                topic:                    String,
+                duration_mins:            Number,
+                activity_type:            String,
+                recommended_question_set: String,
+                completed:                { type: Boolean, default: false },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    milestones: [String],
+  },
+  { timestamps: true },
+);
+
+export const StudyPlan = model<IStudyPlan>('StudyPlan', StudyPlanSchema);

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{event_title}}</title>
+  <style>
+    body { margin:0; padding:0; background:#f4f6f9; font-family:'Segoe UI', Arial, sans-serif; color:#333; }
+    .container { max-width:560px; margin:40px auto; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
+    .header { padding:32px 40px; text-align:center; }
+    .header.urgent { background:#dc2626; }
+    .header.normal { background:#1a3c6e; }
+    .header h1 { color:#ffffff; margin:0; font-size:22px; font-weight:700; }
+    .header p { color:rgba(255,255,255,0.75); margin:4px 0 0; font-size:13px; }
+    .body { padding:40px; }
+    .urgency-badge { display:inline-block; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:4px 12px; border-radius:99px; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:1px; margin-bottom:20px; }
+    h2.event-title { font-size:22px; color:#1a3c6e; margin:0 0 20px; font-weight:700; }
+    .event-details { background:#f8f9ff; border-radius:10px; padding:20px 24px; margin-bottom:24px; }
+    .detail-row { display:flex; align-items:flex-start; margin-bottom:12px; gap:12px; }
+    .detail-row:last-child { margin-bottom:0; }
+    .detail-icon { font-size:16px; flex-shrink:0; margin-top:2px; }
+    .detail-text { font-size:14px; color:#374151; line-height:1.5; }
+    .detail-text strong { display:block; color:#1a3c6e; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px; }
+    .description { font-size:15px; color:#4b5563; line-height:1.7; margin-bottom:28px; }
+    .cta { text-align:center; margin:28px 0; }
+    .cta a { display:inline-block; background:#1a3c6e; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:8px; font-size:15px; font-weight:600; }
+    .footer { background:#f4f6f9; padding:20px 40px; text-align:center; font-size:12px; color:#9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header {{#if is_urgent}}urgent{{else}}normal{{/if}}">
+      <h1>{{institution_name}}</h1>
+      <p>Powered by FuhsoX</p>
+    </div>
+    <div class="body">
+      <p>Hi {{user_name}},</p>
+
+      {{#if is_urgent}}
+      <div class="urgency-badge">🚨 Urgent Notice</div>
+      {{/if}}
+
+      <h2 class="event-title">{{event_title}}</h2>
+
+      <div class="event-details">
+        <div class="detail-row">
+          <span class="detail-icon">📅</span>
+          <div class="detail-text"><strong>Date</strong>{{event_date}}</div>
+        </div>
+        {{#if event_location}}
+        <div class="detail-row">
+          <span class="detail-icon">📍</span>
+          <div class="detail-text"><strong>Location</strong>{{event_location}}</div>
+        </div>
+        {{/if}}
+      </div>
+
+      <p class="description">{{event_description}}</p>
+
+      <div class="cta">
+        <a href="{{cta_link}}">View Event Details →</a>
+      </div>
+    </div>
+    <div class="footer">
+      &copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX
+      <br/>You received this because you are enrolled at {{institution_name}}.
+    </div>
+  </div>
+</body>
+</html>

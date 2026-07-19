@@ -1,0 +1,578 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-TENANCY: Every row belonging to an institution must store institution_id.
+// ALL queries MUST filter by institution_id via scopeToInstitution middleware.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Institution {
+  id            String   @id @default(uuid())
+  name          String
+  slug          String   @unique // e.g. "fuhso"
+  email_domains String[] // ["fuhso.edu.ng"]
+  logo_url      String?
+  primary_color String   @default("#2E75B6")
+  timezone      String   @default("Africa/Lagos")
+  ai_daily_limit Int     @default(20)
+  created_at    DateTime @default(now())
+
+  users         User[]
+  questions     Question[]
+  events        Event[]
+  broadcasts    Broadcast[]
+  news          NewsArticle[]
+  study_rooms   StudyRoom[]
+
+  @@map("institutions")
+}
+
+model User {
+  id               String       @id @default(uuid())
+  institution_id   String
+  email            String       @unique
+  username         String?      @unique
+  full_name        String?
+  faculty          String?
+  department       String?
+  avatar_url       String?
+  bio              String?      @db.VarChar(500)
+  role             Role         @default(student)
+  study_interests  String[]
+  xp_points        Int          @default(0)
+  streak_count     Int          @default(0)
+  last_active_at   DateTime     @default(now())
+  last_streak_date DateTime?
+  email_verified   Boolean      @default(false)
+  auth_provider    AuthProvider @default(email_otp)
+  google_id        String?      @unique
+  apple_id         String?      @unique
+  password_hash    String? // Only for password-based secondary auth
+  risk_flag        Boolean      @default(false)
+  risk_reason      String?
+  deleted_at       DateTime?    // NDPR right-to-delete: set on self-service account deletion
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+
+  institution          Institution      @relation(fields: [institution_id], references: [id])
+  otp_requests         OTPRequest[]
+  sessions             QuizSession[]
+  bookmarks            Bookmark[]
+  connections_sent     Connection[]     @relation("ConnectionSender")
+  connections_received Connection[]     @relation("ConnectionReceiver")
+  notifications        Notification[]
+  schedules            StudySchedule[]
+  badges               UserBadge[]
+  notification_pref    NotificationPref?
+  refresh_tokens       RefreshToken[]
+  device_push_tokens   DevicePushToken[]
+  created_rooms        StudyRoom[]            @relation("RoomCreator")
+  study_room_members   StudyRoomParticipant[]
+
+  @@index([institution_id])
+  @@index([last_active_at])
+  @@index([risk_flag])
+  @@index([xp_points])
+  @@map("users")
+}
+
+enum Role {
+  student
+  admin
+  superadmin
+}
+
+enum AuthProvider {
+  email_otp
+  google
+  apple
+}
+
+enum Platform {
+  ios
+  android
+}
+
+model DevicePushToken {
+  id              String   @id @default(uuid())
+  user_id         String
+  expo_push_token String   @unique
+  platform        Platform
+  last_active_at  DateTime @default(now())
+  created_at      DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("device_push_tokens")
+}
+
+model NotificationPref {
+  id                 String            @id @default(uuid())
+  user_id            String            @unique
+  opt_out_reminders  Boolean           @default(false)
+  quiet_hours_start  String? // "22:00"
+  quiet_hours_end    String? // "06:00"
+  reminder_frequency ReminderFrequency @default(daily)
+  updated_at         DateTime          @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("notification_prefs")
+}
+
+enum ReminderFrequency {
+  daily
+  every_2_days
+  weekly
+}
+
+model RefreshToken {
+  id          String    @id @default(uuid())
+  user_id     String
+  token_hash  String    @unique // bcrypt hash of the token
+  expires_at  DateTime
+  created_at  DateTime  @default(now())
+  revoked_at  DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([expires_at])
+  @@map("refresh_tokens")
+}
+
+model OTPRequest {
+  id           String     @id @default(uuid())
+  user_id      String? // null if user doesn't exist yet
+  email        String
+  otp_hash     String // bcrypt-hashed OTP
+  purpose      OTPPurpose
+  attempts     Int        @default(0)
+  locked_until DateTime?
+  expires_at   DateTime
+  used_at      DateTime?
+  created_at   DateTime   @default(now())
+
+  user User? @relation(fields: [user_id], references: [id])
+
+  @@index([email, purpose])
+  @@map("otp_requests")
+}
+
+enum OTPPurpose {
+  registration
+  login
+  password_reset
+}
+
+model Question {
+  id             String         @id @default(uuid())
+  institution_id String
+  course_code    String
+  course_name    String
+  faculty        String
+  department     String?
+  year           Int
+  topic          String
+  question_text  String         @db.Text
+  question_type  QuestionType
+  options        Json? // [{ key: "A", text: "..." }, ...]
+  correct_answer String // "A" for MCQ, text for others
+  explanation    String?        @db.Text
+  difficulty     Difficulty
+  status         QuestionStatus @default(draft)
+  source         QuestionSource @default(manual)
+  created_by     String? // admin user_id
+  ai_job_id      String? // if from PDF parse job
+  created_at     DateTime       @default(now())
+  updated_at     DateTime       @updatedAt
+
+  institution Institution @relation(fields: [institution_id], references: [id])
+  bookmarks   Bookmark[]
+
+  @@index([institution_id, status])
+  @@index([course_code])
+  @@index([topic])
+  @@index([faculty, department])
+  @@index([difficulty])
+  @@map("questions")
+}
+
+enum QuestionType {
+  mcq
+  short_answer
+  essay
+}
+
+enum Difficulty {
+  easy
+  medium
+  hard
+}
+
+enum QuestionStatus {
+  draft
+  review
+  published
+  archived
+}
+
+enum QuestionSource {
+  manual
+  pdf_upload
+  csv_upload
+  ai_generated
+}
+
+model QuizSession {
+  id               String         @id @default(uuid())
+  user_id          String
+  institution_id   String
+  mode             SessionMode
+  question_source  QuestionSource
+  total_questions  Int
+  score_percent    Float?
+  correct_count    Int?
+  time_taken_secs  Int?
+  started_at       DateTime       @default(now())
+  completed_at     DateTime?
+  question_ids     String[] // ordered list of question IDs for this session
+
+  user    User            @relation(fields: [user_id], references: [id])
+  answers SessionAnswer[]
+
+  @@index([user_id, completed_at])
+  @@index([institution_id])
+  @@map("quiz_sessions")
+}
+
+enum SessionMode {
+  practice
+  exam
+  review
+}
+
+model SessionAnswer {
+  id             String   @id @default(uuid())
+  session_id     String
+  question_id    String
+  chosen_answer  String
+  is_correct     Boolean
+  time_taken_ms  Int
+  ai_feedback_id String? // MongoDB document ID
+  answered_at    DateTime @default(now())
+
+  session QuizSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@index([session_id])
+  @@map("session_answers")
+}
+
+model Bookmark {
+  id          String   @id @default(uuid())
+  user_id     String
+  question_id String
+  created_at  DateTime @default(now())
+
+  user     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, question_id])
+  @@map("bookmarks")
+}
+
+model Connection {
+  id          String           @id @default(uuid())
+  sender_id   String
+  receiver_id String
+  status      ConnectionStatus @default(pending)
+  created_at  DateTime         @default(now())
+  updated_at  DateTime         @updatedAt
+
+  sender   User @relation("ConnectionSender", fields: [sender_id], references: [id])
+  receiver User @relation("ConnectionReceiver", fields: [receiver_id], references: [id])
+
+  @@unique([sender_id, receiver_id])
+  @@index([receiver_id, status])
+  @@map("connections")
+}
+
+enum ConnectionStatus {
+  pending
+  accepted
+  declined
+  blocked
+}
+
+model StudySchedule {
+  id                   String   @id @default(uuid())
+  user_id              String
+  institution_id       String
+  subject              String
+  study_days           Int[] // 0=Sun, 1=Mon, ..., 6=Sat
+  preferred_time_start String // "18:00"
+  preferred_time_end   String // "20:00"
+  exam_date            DateTime
+  is_active            Boolean  @default(true)
+  sessions_planned     Int      @default(0)
+  sessions_completed   Int      @default(0)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, is_active])
+  @@map("study_schedules")
+}
+
+model Notification {
+  id         String           @id @default(uuid())
+  user_id    String
+  type       NotificationType
+  title      String
+  body       String           @db.Text
+  action_url String
+  is_read    Boolean          @default(false)
+  created_at DateTime         @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, is_read])
+  @@index([user_id, created_at])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  event
+  reminder
+  social
+  broadcast
+  system
+}
+
+model Badge {
+  id          String @id @default(uuid())
+  code        String @unique // "STREAK_7", "ACCURACY_90", etc.
+  name        String
+  description String
+  icon_url    String
+  xp_award    Int    @default(0)
+
+  users UserBadge[]
+
+  @@map("badges")
+}
+
+model UserBadge {
+  id         String   @id @default(uuid())
+  user_id    String
+  badge_id   String
+  awarded_at DateTime @default(now())
+
+  user  User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badge_id], references: [id])
+
+  @@unique([user_id, badge_id])
+  @@map("user_badges")
+}
+
+model Event {
+  id              String         @id @default(uuid())
+  institution_id  String
+  created_by      String // admin user_id
+  title           String
+  description     String         @db.Text
+  event_date      DateTime
+  location        String?
+  target_audience TargetAudience @default(all)
+  target_value    String? // faculty name or department name if targeted
+  attachment_url  String?
+  cover_image_url String?
+  is_urgent       Boolean        @default(false)
+  status          EventStatus    @default(draft)
+  scheduled_for   DateTime?
+  published_at    DateTime?
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  institution Institution @relation(fields: [institution_id], references: [id])
+
+  @@index([institution_id, event_date])
+  @@index([status, scheduled_for])
+  @@map("events")
+}
+
+enum TargetAudience {
+  all
+  faculty
+  department
+}
+
+enum EventStatus {
+  draft
+  scheduled
+  published
+  cancelled
+}
+
+model Broadcast {
+  id              String          @id @default(uuid())
+  institution_id  String
+  created_by      String
+  recipient_type  TargetAudience
+  recipient_value String?
+  subject         String
+  html_body       String          @db.Text
+  recipient_count Int             @default(0)
+  sent_at         DateTime?
+  status          BroadcastStatus @default(queued)
+  created_at      DateTime        @default(now())
+
+  institution Institution   @relation(fields: [institution_id], references: [id])
+  deliveries  EmailDelivery[]
+
+  @@map("broadcasts")
+}
+
+enum BroadcastStatus {
+  queued
+  sending
+  sent
+  failed
+}
+
+model EmailDelivery {
+  id             String              @id @default(uuid())
+  broadcast_id   String?
+  user_id        String
+  email          String
+  ses_message_id String?
+  status         EmailDeliveryStatus @default(queued)
+  opened_at      DateTime?
+  clicked_at     DateTime?
+  failed_at      DateTime?
+  sent_at        DateTime?
+  created_at     DateTime            @default(now())
+
+  broadcast Broadcast? @relation(fields: [broadcast_id], references: [id])
+
+  @@index([broadcast_id])
+  @@index([user_id])
+  @@map("email_deliveries")
+}
+
+enum EmailDeliveryStatus {
+  queued
+  sent
+  delivered
+  opened
+  clicked
+  failed
+  bounced
+}
+
+model NewsArticle {
+  id              String     @id @default(uuid())
+  institution_id  String
+  created_by      String
+  title           String
+  category        String
+  cover_image_url String?
+  html_body       String     @db.Text
+  is_pinned       Boolean    @default(false)
+  published_at    DateTime?
+  scheduled_for   DateTime?
+  status          NewsStatus @default(draft)
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  institution Institution @relation(fields: [institution_id], references: [id])
+
+  @@index([institution_id, published_at])
+  @@map("news_articles")
+}
+
+enum NewsStatus {
+  draft
+  scheduled
+  published
+}
+
+model AIUsageLog {
+  id             String    @id @default(uuid())
+  user_id        String
+  institution_id String
+  feature        AIFeature
+  tokens_used    Int       @default(0)
+  model          String
+  created_at     DateTime  @default(now())
+
+  @@index([user_id, created_at])
+  @@index([institution_id, created_at])
+  @@map("ai_usage_logs")
+}
+
+enum AIFeature {
+  question_generation
+  quiz_feedback
+  study_plan
+}
+
+model PDFParseJob {
+  id              String      @id @default(uuid())
+  institution_id  String
+  created_by      String
+  file_url        String // S3 URL
+  status          ParseStatus @default(processing)
+  questions_found Int         @default(0)
+  error_message   String?
+  created_at      DateTime    @default(now())
+  completed_at    DateTime?
+
+  @@map("pdf_parse_jobs")
+}
+
+enum ParseStatus {
+  processing
+  complete
+  failed
+}
+
+model StudyRoom {
+  id              String   @id @default(uuid())
+  institution_id  String
+  name            String
+  description     String?  @db.Text
+  is_private      Boolean  @default(false)
+  passcode        String?
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  institution  Institution @relation(fields: [institution_id], references: [id])
+  creator      User        @relation("RoomCreator", fields: [created_by], references: [id])
+  participants StudyRoomParticipant[]
+
+  @@index([institution_id, created_at])
+  @@map("study_rooms")
+}
+
+model StudyRoomParticipant {
+  id         String   @id @default(uuid())
+  room_id    String
+  user_id    String
+  joined_at  DateTime @default(now())
+
+  room StudyRoom @relation(fields: [room_id], references: [id], onDelete: Cascade)
+  user User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([room_id, user_id])
+  @@map("study_room_participants")
+}

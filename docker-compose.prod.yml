@@ -1,0 +1,96 @@
+# Production stack for a single VM (e.g. Oracle Cloud Always Free ARM).
+# Runs the API + its three datastores + a Caddy reverse proxy that terminates
+# HTTPS automatically (Let's Encrypt). Only Caddy is exposed to the internet;
+# the API and datastores talk over the private compose network.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# All values come from a `.env` file in this directory — copy .env.production.example.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     fuhsox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       fuhsox
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fuhsox']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:7-jammy
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: fuhsox
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', 'db.adminCommand("ping")']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongodb:  { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    # Secrets (JWT, AWS, Anthropic, Google, FRONTEND_URL, …) come from the file.
+    env_file:
+      - .env
+    # Connection strings are derived here from the service names + the same
+    # passwords, so there is one source of truth and nothing to keep in sync.
+    # These override anything with the same key in env_file.
+    environment:
+      NODE_ENV:     production
+      PORT:         '4000'
+      DATABASE_URL: postgresql://fuhsox:${POSTGRES_PASSWORD}@postgres:5432/fuhsox?schema=public
+      MONGODB_URI:  mongodb://fuhsox:${MONGO_PASSWORD}@mongodb:27017/fuhsox?authSource=admin
+      REDIS_URL:    redis://:${REDIS_PASSWORD}@redis:6379
+    expose:
+      - '4000'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

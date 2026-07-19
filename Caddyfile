@@ -1,0 +1,9 @@
+# Caddy reverse proxy — automatic HTTPS via Let's Encrypt for {$DOMAIN}.
+# Caddy fetches + renews the certificate on its own; nothing else to configure.
+# A plain reverse_proxy also upgrades WebSocket connections transparently, so
+# Socket.io realtime works with no extra directives.
+
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy api:4000
+}

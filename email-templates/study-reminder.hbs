@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Time to Study!</title>
+  <style>
+    body { margin:0; padding:0; background:#f0f4f8; font-family:'Segoe UI', Arial, sans-serif; color:#333; }
+    .container { max-width:560px; margin:40px auto; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
+    .header { background:linear-gradient(135deg, #1a3c6e 0%, #2563eb 100%); padding:32px 40px; text-align:center; }
+    .header h1 { color:#ffffff; margin:0 0 4px; font-size:20px; font-weight:700; }
+    .header .emoji { font-size:40px; display:block; margin-bottom:12px; }
+    .body { padding:36px 40px; }
+    .greeting { font-size:18px; font-weight:600; color:#1a3c6e; margin-bottom:8px; }
+    .subject-card { background:#f0f4ff; border-left:4px solid #2563eb; padding:16px 20px; border-radius:6px; margin:20px 0; }
+    .subject-card .subject { font-size:22px; font-weight:700; color:#1a3c6e; }
+    .subject-card .time { font-size:14px; color:#6b7280; margin-top:4px; }
+    .streak-section { background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:16px 20px; margin:20px 0; display:flex; align-items:center; gap:12px; }
+    .streak-count { font-size:28px; font-weight:800; color:#ea580c; }
+    .streak-label { font-size:13px; color:#9a3412; }
+    .cta { text-align:center; margin:28px 0 12px; }
+    .cta a { display:inline-block; background:#2563eb; color:#ffffff; text-decoration:none; padding:16px 40px; border-radius:10px; font-size:16px; font-weight:700; }
+    .tip { font-size:13px; color:#6b7280; text-align:center; margin-top:8px; }
+    .footer { background:#f4f6f9; padding:20px 40px; text-align:center; font-size:12px; color:#9ca3af; border-top:1px solid #e5e7eb; }
+    .footer a { color:#6b7280; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <span class="emoji">📚</span>
+      <h1>Study Time, {{user_name}}!</h1>
+    </div>
+    <div class="body">
+      <p class="greeting">Your study session is scheduled for today</p>
+      <p style="color:#6b7280; font-size:14px;">Consistency is the key to academic excellence. Here's what's on your plan:</p>
+
+      <div class="subject-card">
+        <div class="subject">{{subject}}</div>
+        <div class="time">🕐 Scheduled for {{time}}</div>
+      </div>
+
+      {{#if streak_count}}
+      <div class="streak-section">
+        <div>
+          <div class="streak-count">🔥 {{streak_count}}</div>
+        </div>
+        <div>
+          <div class="streak-label"><strong>Day Streak!</strong><br/>Keep it going — you're on a roll.</div>
+        </div>
+      </div>
+      {{/if}}
+
+      <div class="cta">
+        <a href="{{quiz_link}}">Start Practicing Now →</a>
+      </div>
+      <p class="tip">💡 Even 20 minutes of focused practice makes a difference.</p>
+    </div>
+    <div class="footer">
+      &copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX<br/>
+      <a href="#">Manage reminder preferences</a>
+    </div>
+  </div>
+</body>
+</html>
