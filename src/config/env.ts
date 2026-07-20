@@ -43,6 +43,26 @@ const envSchema = z.object({
   AWS_S3_BUCKET: z.string().min(1),
   AWS_SES_FROM_EMAIL: z.string().email(),
 
+  // Which transport `sendEmail` uses. Unset keeps the historical behaviour —
+  // SES in production, SMTP everywhere else — so existing deployments are
+  // unaffected. Set it explicitly to run one provider from the other's
+  // environment (e.g. MAIL_PROVIDER=brevo on Render to test without SES).
+  //   ses   — AWS SES over the SDK (HTTPS:443)
+  //   brevo — Brevo transactional API (HTTPS:443)
+  //   smtp  — nodemailer (MailHog locally, or Brevo's SMTP relay)
+  // NOTE: Render's free web services block outbound SMTP (ports 25/465/587), so
+  // 'smtp' times out when deployed. Both HTTPS providers work there.
+  MAIL_PROVIDER: z.enum(['ses', 'brevo', 'smtp']).optional(),
+
+  // Brevo REST key for MAIL_PROVIDER=brevo. This is the *API* key, which is a
+  // different credential from the SMTP key used by the smtp transport.
+  BREVO_API_KEY: z.string().optional(),
+
+  // Envelope From. Must be an identity the ACTIVE provider has verified — a
+  // Brevo-verified sender differs from the SES one, so it is overridable.
+  // Falls back to AWS_SES_FROM_EMAIL, which is what SES has always used.
+  MAIL_FROM_EMAIL: z.string().email().optional(),
+
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().int().default(1025),
   SMTP_USER: z.string().optional(),

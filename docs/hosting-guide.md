@@ -87,7 +87,16 @@ Add every var from `.env.example`. Specifics for this deployment:
 - `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` — `openssl rand -hex 32` each
 - `GOOGLE_CLIENT_ID/SECRET`, `GOOGLE_ANDROID_CLIENT_ID`
 - `ANTHROPIC_API_KEY` (`sk-ant-…`), the `AWS_*` block, `AWS_SES_FROM_EMAIL`
-- **Do NOT set** `SMTP_*` — those are the local MailHog dev fallback.
+- **Do NOT set** `SMTP_*` or `MAIL_PROVIDER=smtp` on Render. Render blocks
+  outbound SMTP ports (25/465/587) on free web services, so an SMTP transport
+  times out there. Use SMTP (MailHog/Brevo relay) **locally only**.
+- On Render pick an HTTPS:443 transport, both of which the block does not affect:
+  - `MAIL_PROVIDER=ses` (unset behaves the same) — production. Needs
+    `AWS_SES_FROM_EMAIL` verified **in `AWS_REGION`**, and SES out of sandbox or
+    it only delivers to verified recipients.
+  - `MAIL_PROVIDER=brevo` + `BREVO_API_KEY` + `MAIL_FROM_EMAIL` — free tier,
+    useful for testing the deploy while SES sandbox access is pending. The
+    `BREVO_API_KEY` is the REST key, not the SMTP key.
 
 ### 2d. First deploy
 Render builds + starts. Watch the logs for `✅ FuhsoX API listening`. A boot crash

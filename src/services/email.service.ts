@@ -6,6 +6,25 @@ import path from 'path';
 import { env } from '@config/env';
 import logger from '@lib/logger';
 
+// ─── Provider selection ────────────────────────────────────────────────────────
+
+/**
+ * SES for production (Render), SMTP for local dev/testing. Explicit
+ * MAIL_PROVIDER wins; otherwise fall back to the original NODE_ENV rule so
+ * deployments that never set it behave exactly as before.
+ *
+ * SES goes over HTTPS:443 via the SDK — NOT SMTP — which is why it works on a
+ * free Render instance despite Render blocking outbound ports 25/465/587.
+ */
+const MAIL_PROVIDER =
+  env.MAIL_PROVIDER ?? (env.NODE_ENV === 'production' ? 'ses' : 'smtp');
+
+// Fail at boot rather than silently queueing jobs that can never send — a failed
+// email job is invisible to the caller, since request-otp returns before it runs.
+if (MAIL_PROVIDER === 'brevo' && !env.BREVO_API_KEY) {
+  throw new Error('MAIL_PROVIDER=brevo requires BREVO_API_KEY to be set');
+}
+
 // ─── Email Clients ─────────────────────────────────────────────────────────────
 
 const sesClient = new SESClient({
@@ -22,7 +41,9 @@ const smtpTransport = nodemailer.createTransport({
   auth: env.SMTP_USER
     ? { user: env.SMTP_USER, pass: env.SMTP_PASS }
     : undefined,
-  secure: false,
+  // 465 is implicit TLS from the first byte; 587 (Brevo) and 1025 (MailHog)
+  // start plaintext and upgrade via STARTTLS. Hard-coding false broke 465.
+  secure: env.SMTP_PORT === 465,
 });
 
 // ─── Template Cache ────────────────────────────────────────────────────────────
@@ -65,10 +86,39 @@ export interface SendEmailParams {
   text?:    string;
 }
 
-export async function sendEmail(params: SendEmailParams): Promise<void> {
-  const from = `FuhsoX <${env.AWS_SES_FROM_EMAIL}>`;
+const FROM_NAME = 'FuhsoX';
 
-  if (env.NODE_ENV === 'production') {
+export async function sendEmail(params: SendEmailParams): Promise<void> {
+  const fromEmail = env.MAIL_FROM_EMAIL ?? env.AWS_SES_FROM_EMAIL;
+  const from = `${FROM_NAME} <${fromEmail}>`;
+
+  if (MAIL_PROVIDER === 'brevo') {
+    // Brevo transactional API. Deliberately HTTP, not their SMTP relay: Render's
+    // free web services block outbound ports 25/465/587, so only :443 gets out.
+    // `sender.email` must be a sender Brevo has verified on the account.
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key':      env.BREVO_API_KEY as string,
+        'content-type': 'application/json',
+        accept:         'application/json',
+      },
+      body: JSON.stringify({
+        sender:      { name: FROM_NAME, email: fromEmail },
+        to:          [{ email: params.to }],
+        subject:     params.subject,
+        htmlContent: params.html,
+        textContent: params.text ?? strip(params.html),
+      }),
+    });
+
+    // Surface Brevo's own error text — "sender not verified" and "invalid key"
+    // are both 400s, and without the body the worker logs an opaque failure.
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Brevo send failed (${res.status}): ${detail}`);
+    }
+  } else if (MAIL_PROVIDER === 'ses') {
     // AWS SES
     const command = new SendEmailCommand({
       Source: from,
@@ -83,7 +133,7 @@ export async function sendEmail(params: SendEmailParams): Promise<void> {
     });
     await sesClient.send(command);
   } else {
-    // Nodemailer (dev/test — MailHog or Mailtrap)
+    // Nodemailer over SMTP (dev/test — Brevo, MailHog or Mailtrap)
     await smtpTransport.sendMail({
       from,
       to:      params.to,
@@ -93,7 +143,10 @@ export async function sendEmail(params: SendEmailParams): Promise<void> {
     });
   }
 
-  logger.debug({ to: params.to, subject: params.subject }, 'Email sent');
+  logger.debug(
+    { to: params.to, subject: params.subject, provider: MAIL_PROVIDER },
+    'Email sent',
+  );
 }
 
 // ─── Strip HTML for plain-text fallback ───────────────────────────────────────
