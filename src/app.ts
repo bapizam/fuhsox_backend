@@ -87,6 +87,12 @@ if (env.NODE_ENV !== 'test') {
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  return res.status(200).json({
+    status: "success",
+    message: "Good"
+  })
+});
 
 app.use('/api/v1', router);
 
