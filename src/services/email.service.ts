@@ -25,6 +25,10 @@ if (MAIL_PROVIDER === 'brevo' && !env.BREVO_API_KEY) {
   throw new Error('MAIL_PROVIDER=brevo requires BREVO_API_KEY to be set');
 }
 
+if (MAIL_PROVIDER === 'resend' && !env.RESEND_API_KEY) {
+  throw new Error('MAIL_PROVIDER=resend requires RESEND_API_KEY to be set');
+}
+
 // ─── Email Clients ─────────────────────────────────────────────────────────────
 
 const sesClient = new SESClient({
@@ -41,9 +45,12 @@ const smtpTransport = nodemailer.createTransport({
   auth: env.SMTP_USER
     ? { user: env.SMTP_USER, pass: env.SMTP_PASS }
     : undefined,
-  // 465 is implicit TLS from the first byte; 587 (Brevo) and 1025 (MailHog)
-  // start plaintext and upgrade via STARTTLS. Hard-coding false broke 465.
+  // 465 is implicit TLS from the first byte; 587 (Brevo, Gmail) and 1025
+  // (MailHog) start plaintext and upgrade via STARTTLS. Hard-coding false broke 465.
   secure: env.SMTP_PORT === 465,
+  // Refuse to fall back to cleartext on the submission port, which would leak the
+  // Gmail app password. Scoped to 587 because MailHog on 1025 offers no STARTTLS.
+  requireTLS: env.SMTP_PORT === 587,
 });
 
 // ─── Template Cache ────────────────────────────────────────────────────────────
@@ -117,6 +124,33 @@ export async function sendEmail(params: SendEmailParams): Promise<void> {
     if (!res.ok) {
       const detail = await res.text().catch(() => '<unreadable body>');
       throw new Error(`Brevo send failed (${res.status}): ${detail}`);
+    }
+  } else if (MAIL_PROVIDER === 'resend') {
+    // Resend transactional API — HTTPS:443, so it survives Render's free-tier
+    // SMTP block. `from` must be a domain Resend has verified, OR the shared
+    // onboarding@resend.dev sender, which needs no domain of your own.
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        authorization:  `Bearer ${env.RESEND_API_KEY as string}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to:      [params.to],
+        subject: params.subject,
+        html:    params.html,
+        text:    params.text ?? strip(params.html),
+      }),
+    });
+
+    // Same reasoning as Brevo: an unverified sender and a bad key are both 4xx,
+    // and without the body the worker only logs an opaque failure. Resend's
+    // 403 for "can only send to your own address" is especially easy to
+    // misread as an auth problem, so the detail matters.
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '<unreadable body>');
+      throw new Error(`Resend send failed (${res.status}): ${detail}`);
     }
   } else if (MAIL_PROVIDER === 'ses') {
     // AWS SES

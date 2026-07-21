@@ -47,16 +47,24 @@ const envSchema = z.object({
   // SES in production, SMTP everywhere else — so existing deployments are
   // unaffected. Set it explicitly to run one provider from the other's
   // environment (e.g. MAIL_PROVIDER=brevo on Render to test without SES).
-  //   ses   — AWS SES over the SDK (HTTPS:443)
-  //   brevo — Brevo transactional API (HTTPS:443)
-  //   smtp  — nodemailer (MailHog locally, or Brevo's SMTP relay)
+  //   ses    — AWS SES over the SDK (HTTPS:443)
+  //   brevo  — Brevo transactional API (HTTPS:443)
+  //   resend — Resend transactional API (HTTPS:443)
+  //   smtp   — nodemailer (MailHog or Gmail locally)
   // NOTE: Render's free web services block outbound SMTP (ports 25/465/587), so
-  // 'smtp' times out when deployed. Both HTTPS providers work there.
-  MAIL_PROVIDER: z.enum(['ses', 'brevo', 'smtp']).optional(),
+  // 'smtp' times out when deployed. All three HTTPS providers work there.
+  MAIL_PROVIDER: z.enum(['ses', 'brevo', 'resend', 'smtp']).optional(),
 
   // Brevo REST key for MAIL_PROVIDER=brevo. This is the *API* key, which is a
   // different credential from the SMTP key used by the smtp transport.
   BREVO_API_KEY: z.string().optional(),
+
+  // Resend key for MAIL_PROVIDER=resend. Resend is the only provider here that
+  // can send without owning a domain: its onboarding@resend.dev sender is
+  // pre-authenticated (SPF/DKIM/DMARC all valid), which is why mail from it
+  // actually lands while noreply@fuhsox.ng silently disappears. The catch is
+  // that an unverified account may only send TO its own signup address.
+  RESEND_API_KEY: z.string().optional(),
 
   // Envelope From. Must be an identity the ACTIVE provider has verified — a
   // Brevo-verified sender differs from the SES one, so it is overridable.
