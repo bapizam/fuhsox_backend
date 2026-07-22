@@ -1,20 +1,19 @@
 import { Worker, type Job } from 'bullmq';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { Prisma } from '@prisma/client';
-import { s3Client } from '@lib/s3';
-import { env } from '@config/env';
+import { s3Client, extractKeyFromUrl, STORAGE_BUCKET } from '@lib/s3';
 import { aiService } from '@services/ai.service';
 import prisma from '@config/database';
 import type { PDFJob } from '@typings/jobs';
 import logger from '@lib/logger';
 
 async function downloadPDFFromS3(fileUrl: string): Promise<Buffer> {
-  const key = fileUrl.replace(
-    `https://${env.AWS_S3_BUCKET}.s3.${env.AWS_REGION}.amazonaws.com/`,
-    '',
-  );
+  // Was duplicating the AWS URL shape inline, which broke the moment storage
+  // moved to any S3-compatible provider. `extractKeyFromUrl` is the single
+  // inverse of `publicUrlForKey` and handles the legacy AWS prefix too.
+  const key = extractKeyFromUrl(fileUrl);
 
-  const command = new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key });
+  const command = new GetObjectCommand({ Bucket: STORAGE_BUCKET, Key: key });
   const response = await s3Client.send(command);
 
   if (!response.Body) throw new Error('Empty S3 response body');

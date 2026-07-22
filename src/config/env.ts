@@ -43,6 +43,35 @@ const envSchema = z.object({
   AWS_S3_BUCKET: z.string().min(1),
   AWS_SES_FROM_EMAIL: z.string().email(),
 
+  // ─── Object storage (avatars, PDFs) ────────────────────────────────────────
+  // The storage layer speaks plain S3, so ANY S3-compatible provider works —
+  // Supabase Storage, Cloudflare R2, Backblaze B2, MinIO — not just AWS.
+  //
+  // Every var below is optional and falls back to the matching AWS_* above, so
+  // existing AWS deployments are unaffected by their absence. They exist as
+  // separate names because AWS_ACCESS_KEY_ID/_SECRET are ALSO consumed by SES in
+  // email.service.ts: pointing storage at Supabase must not silently re-credential
+  // the mailer.
+  //
+  // Supabase example:
+  //   STORAGE_ENDPOINT=https://<project-ref>.supabase.co/storage/v1/s3
+  //   STORAGE_PUBLIC_BASE_URL=https://<project-ref>.supabase.co/storage/v1/object/public/<bucket>
+  //   STORAGE_REGION=<project region, e.g. eu-west-2>
+  //   STORAGE_BUCKET=fuhsox
+  //   STORAGE_ACCESS_KEY_ID / STORAGE_SECRET_ACCESS_KEY  (Storage → S3 access keys)
+  //
+  // Setting STORAGE_ENDPOINT also switches the client to path-style addressing,
+  // which every non-AWS provider requires.
+  STORAGE_ENDPOINT: z.string().url().optional(),
+  // Public URL prefix a stored object is served from, WITHOUT a trailing slash.
+  // Required whenever STORAGE_ENDPOINT is set: the S3 API endpoint and the public
+  // read URL are different hosts on most providers, so it cannot be derived.
+  STORAGE_PUBLIC_BASE_URL: z.string().url().optional(),
+  STORAGE_ACCESS_KEY_ID: z.string().optional(),
+  STORAGE_SECRET_ACCESS_KEY: z.string().optional(),
+  STORAGE_REGION: z.string().optional(),
+  STORAGE_BUCKET: z.string().optional(),
+
   // Which transport `sendEmail` uses. Unset keeps the historical behaviour —
   // SES in production, SMTP everywhere else — so existing deployments are
   // unaffected. Set it explicitly to run one provider from the other's
@@ -77,7 +106,19 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
 
   SENTRY_DSN: z.string().url().optional(),
-});
+})
+  // A custom S3 endpoint without a public base URL boots fine and then hands
+  // clients AWS-shaped URLs that 404 — fail loudly at startup instead.
+  .superRefine((cfg, ctx) => {
+    if (cfg.STORAGE_ENDPOINT && !cfg.STORAGE_PUBLIC_BASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['STORAGE_PUBLIC_BASE_URL'],
+        message:
+          'STORAGE_PUBLIC_BASE_URL is required when STORAGE_ENDPOINT is set — the S3 API host and the public read host differ on non-AWS providers.',
+      });
+    }
+  });
 
 function validateEnv() {
   const result = envSchema.safeParse(process.env);
