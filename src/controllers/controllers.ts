@@ -218,6 +218,25 @@ export const submitAnswer = asyncHandler(async (req: Request, res: Response) => 
   res.status(200).json(ok(result));
 });
 
+/**
+ * Bulk sibling of `answerSchema`. Capped at 200 — comfortably above any real
+ * session (the runner tops out well below that) while bounding one request's work.
+ */
+const answersBatchSchema = z.object({
+  answers: z.array(answerSchema).min(1).max(200),
+});
+
+export const submitAnswers = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const body = answersBatchSchema.parse(req.body);
+  const result = await sessionService.submitAnswers({
+    sessionId: id,
+    userId:    req.user.id,
+    answers:   body.answers,
+  });
+  res.status(200).json(ok(result));
+});
+
 export const completeSession = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   const result = await sessionService.completeSession(id, req.user.id);

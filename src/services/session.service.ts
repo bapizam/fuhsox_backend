@@ -251,6 +251,158 @@ export async function submitAnswer(params: {
   return { answer, is_correct: isCorrect, correct_answer: gradeSource.correct_answer, question: questionPayload };
 }
 
+// ─── Submit Answers (batch) ────────────────────────────────────────────────────
+
+export interface BatchAnswerInput {
+  question_id:   string;
+  chosen_answer: string;
+  time_taken_ms: number;
+}
+
+export interface BatchAnswerResult {
+  question_id:      string;
+  is_correct:       boolean;
+  correct_answer:   string;
+  /** True when this question already had an answer — the stored one is returned. */
+  already_answered: boolean;
+}
+
+/**
+ * Submit many answers in one request — the exam-mode path.
+ *
+ * Exam submits are silent by design (no per-question feedback is shown), so the
+ * per-answer round trip bought nothing during the exam: a 40-question exam cost
+ * 42 requests, and the server repeated the session lookup, the duplicate check and
+ * the question fetch 40 times over. This does each once and one bulk insert.
+ *
+ * Deliberately does NOT stream AI tutor feedback. That is what makes practice mode
+ * worth its per-answer round trip, and the backend only streams to an already
+ * connected socket — so practice keeps using `submitAnswer` and this stays the
+ * quiet bulk path.
+ *
+ * Idempotent per item rather than all-or-nothing: a question that already has an
+ * answer comes back with `already_answered: true` and the STORED verdict instead
+ * of failing the batch. A retried flush after a dropped response must not 409 the
+ * whole exam.
+ */
+export async function submitAnswers(params: {
+  sessionId: string;
+  userId:    string;
+  answers:   BatchAnswerInput[];
+}): Promise<{ results: BatchAnswerResult[] }> {
+  const { sessionId, userId, answers } = params;
+
+  const session = await prisma.quizSession.findFirst({
+    where: { id: sessionId, user_id: userId },
+  });
+
+  if (!session) {
+    throw new AppError(404, 'NOT_FOUND', 'Session not found');
+  }
+
+  if (session.completed_at) {
+    throw new AppError(400, 'CONFLICT', 'This session is already completed');
+  }
+
+  // Reject the whole batch if any question is foreign to the session — that is a
+  // client bug, not a race, and silently dropping it would corrupt the score.
+  const sessionQuestionIds = new Set(session.question_ids);
+  for (const item of answers) {
+    if (!sessionQuestionIds.has(item.question_id)) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Question does not belong to this session');
+    }
+  }
+
+  // Last write wins within one payload, so a duplicated question_id can't produce
+  // two rows for the same question.
+  const deduped = [...new Map(answers.map((a) => [a.question_id, a])).values()];
+  const questionIds = deduped.map((a) => a.question_id);
+
+  const existing = await prisma.sessionAnswer.findMany({
+    where:  { session_id: sessionId, question_id: { in: questionIds } },
+    select: { question_id: true, is_correct: true },
+  });
+  const existingByQuestion = new Map(existing.map((a) => [a.question_id, a]));
+
+  // Questions are dual-sourced exactly as in `submitAnswer` and `completeSession`:
+  // bank questions live in PostgreSQL, AI-generated ones in MongoDB.
+  const bankQuestions = await prisma.question.findMany({
+    where:  { id: { in: questionIds } },
+    select: { id: true, correct_answer: true },
+  });
+  const correctByQuestion = new Map(bankQuestions.map((q) => [q.id, q.correct_answer]));
+
+  const mongoIds = questionIds.filter(
+    (id) => !correctByQuestion.has(id) && /^[0-9a-fA-F]{24}$/.test(id),
+  );
+  if (mongoIds.length > 0) {
+    const aiQuestions = await AIQuestion.find(
+      { _id: { $in: mongoIds }, user_id: userId },
+      { correct_answer: 1 },
+    ).lean();
+    for (const q of aiQuestions) {
+      correctByQuestion.set((q._id as { toString(): string }).toString(), q.correct_answer);
+    }
+  }
+
+  const results: BatchAnswerResult[] = [];
+  const toCreate: {
+    session_id:    string;
+    question_id:   string;
+    chosen_answer: string;
+    is_correct:    boolean;
+    time_taken_ms: number;
+  }[] = [];
+
+  for (const item of deduped) {
+    const correctAnswer = correctByQuestion.get(item.question_id);
+    if (correctAnswer === undefined) {
+      throw new AppError(404, 'NOT_FOUND', `Question not found: ${item.question_id}`);
+    }
+
+    const previous = existingByQuestion.get(item.question_id);
+    if (previous) {
+      results.push({
+        question_id:      item.question_id,
+        is_correct:       previous.is_correct,
+        correct_answer:   correctAnswer,
+        already_answered: true,
+      });
+      continue;
+    }
+
+    // Same rule as `submitAnswer`, so a client grading offline agrees with us.
+    const isCorrect =
+      item.chosen_answer.trim().toUpperCase() === correctAnswer.trim().toUpperCase();
+
+    toCreate.push({
+      session_id:    sessionId,
+      question_id:   item.question_id,
+      chosen_answer: item.chosen_answer,
+      is_correct:    isCorrect,
+      time_taken_ms: item.time_taken_ms,
+    });
+
+    results.push({
+      question_id:      item.question_id,
+      is_correct:       isCorrect,
+      correct_answer:   correctAnswer,
+      already_answered: false,
+    });
+  }
+
+  if (toCreate.length > 0) {
+    await prisma.sessionAnswer.createMany({ data: toCreate });
+  }
+
+  logger.info(
+    { sessionId, submitted: toCreate.length, skipped: deduped.length - toCreate.length },
+    'Batch answers submitted',
+  );
+
+  return { results };
+}
+
 // ─── Complete Session ──────────────────────────────────────────────────────────
 
 export async function completeSession(sessionId: string, userId: string) {
@@ -355,6 +507,7 @@ export async function getSessionDetail(sessionId: string, userId: string) {
 export const sessionService = {
   createSession,
   submitAnswer,
+  submitAnswers,
   completeSession,
   getSessionDetail,
 };
