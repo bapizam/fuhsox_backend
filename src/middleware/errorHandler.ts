@@ -24,14 +24,29 @@ export const globalErrorHandler: ErrorRequestHandler = (
   res: Response,
   _next: NextFunction,
 ): void => {
-  // Always log the error
-  logger.error({ err, path: req.path, method: req.method }, 'Unhandled error');
+  // A rejected request is not a fault. "Question already answered", "No questions
+  // found" and validation failures are the API working as designed, and logging
+  // them at error level — alongside a Sentry event each — buried genuine upstream
+  // failures in noise. 5xx AppErrors are real faults and keep error level.
+  const expected =
+    (err instanceof AppError && err.statusCode < 500) || err instanceof ZodError;
 
-  // Report to Sentry (non-blocking)
-  Sentry.captureException(err);
+  if (expected) {
+    logger.warn({ err, path: req.path, method: req.method }, 'Request rejected');
+  } else {
+    logger.error({ err, path: req.path, method: req.method }, 'Unhandled error');
+    Sentry.captureException(err);
+  }
 
   // ─── AppError (our domain errors) ─────────────────────────────────────────
   if (err instanceof AppError) {
+    // Surface the backoff hint as the standard header too — a client shouldn't have
+    // to parse the body to learn when to retry.
+    const retryAfterMs = (err.details as { retry_after_ms?: number } | undefined)?.retry_after_ms;
+    if (err.statusCode === 429 && typeof retryAfterMs === 'number') {
+      res.setHeader('Retry-After', Math.ceil(retryAfterMs / 1000));
+    }
+
     res.status(err.statusCode).json(fail(err.code, err.message, err.details));
     return;
   }
