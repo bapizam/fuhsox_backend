@@ -13,22 +13,26 @@ datasource db {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Institution {
-  id            String   @id @default(uuid())
-  name          String
-  slug          String   @unique // e.g. "fuhso"
-  email_domains String[] // ["fuhso.edu.ng"]
-  logo_url      String?
-  primary_color String   @default("#2E75B6")
-  timezone      String   @default("Africa/Lagos")
-  ai_daily_limit Int     @default(20)
-  created_at    DateTime @default(now())
+  id                String   @id @default(uuid())
+  name              String
+  slug              String   @unique // e.g. "fuhso"
+  email_domains     String[] // ["fuhso.edu.ng"]
+  logo_url          String?
+  primary_color     String   @default("#2E75B6")
+  timezone          String   @default("Africa/Lagos")
+  ai_daily_limit    Int      @default(20)
+  // Fraction of an adaptive assessment a learner must score for an objective to
+  // pass. Institution-level so a school can hold a stricter bar; snapshotted onto
+  // every MasteryAttempt so changing it never rewrites history.
+  mastery_threshold Float    @default(0.9)
+  created_at        DateTime @default(now())
 
-  users         User[]
-  questions     Question[]
-  events        Event[]
-  broadcasts    Broadcast[]
-  news          NewsArticle[]
-  study_rooms   StudyRoom[]
+  users       User[]
+  questions   Question[]
+  events      Event[]
+  broadcasts  Broadcast[]
+  news        NewsArticle[]
+  study_rooms StudyRoom[]
 
   @@map("institutions")
 }
@@ -56,16 +60,16 @@ model User {
   password_hash    String? // Only for password-based secondary auth
   risk_flag        Boolean      @default(false)
   risk_reason      String?
-  deleted_at       DateTime?    // NDPR right-to-delete: set on self-service account deletion
+  deleted_at       DateTime? // NDPR right-to-delete: set on self-service account deletion
   created_at       DateTime     @default(now())
   updated_at       DateTime     @updatedAt
 
-  institution          Institution      @relation(fields: [institution_id], references: [id])
+  institution          Institution            @relation(fields: [institution_id], references: [id])
   otp_requests         OTPRequest[]
   sessions             QuizSession[]
   bookmarks            Bookmark[]
-  connections_sent     Connection[]     @relation("ConnectionSender")
-  connections_received Connection[]     @relation("ConnectionReceiver")
+  connections_sent     Connection[]           @relation("ConnectionSender")
+  connections_received Connection[]           @relation("ConnectionReceiver")
   notifications        Notification[]
   schedules            StudySchedule[]
   badges               UserBadge[]
@@ -74,6 +78,8 @@ model User {
   device_push_tokens   DevicePushToken[]
   created_rooms        StudyRoom[]            @relation("RoomCreator")
   study_room_members   StudyRoomParticipant[]
+  learning_resources   LearningResource[]
+  learning_objectives  LearningObjective[]
 
   @@index([institution_id])
   @@index([last_active_at])
@@ -134,12 +140,12 @@ enum ReminderFrequency {
 }
 
 model RefreshToken {
-  id          String    @id @default(uuid())
-  user_id     String
-  token_hash  String    @unique // bcrypt hash of the token
-  expires_at  DateTime
-  created_at  DateTime  @default(now())
-  revoked_at  DateTime?
+  id         String    @id @default(uuid())
+  user_id    String
+  token_hash String    @unique // bcrypt hash of the token
+  expires_at DateTime
+  created_at DateTime  @default(now())
+  revoked_at DateTime?
 
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
@@ -232,18 +238,18 @@ enum QuestionSource {
 }
 
 model QuizSession {
-  id               String         @id @default(uuid())
-  user_id          String
-  institution_id   String
-  mode             SessionMode
-  question_source  QuestionSource
-  total_questions  Int
-  score_percent    Float?
-  correct_count    Int?
-  time_taken_secs  Int?
-  started_at       DateTime       @default(now())
-  completed_at     DateTime?
-  question_ids     String[] // ordered list of question IDs for this session
+  id              String         @id @default(uuid())
+  user_id         String
+  institution_id  String
+  mode            SessionMode
+  question_source QuestionSource
+  total_questions Int
+  score_percent   Float?
+  correct_count   Int?
+  time_taken_secs Int?
+  started_at      DateTime       @default(now())
+  completed_at    DateTime?
+  question_ids    String[] // ordered list of question IDs for this session
 
   user    User            @relation(fields: [user_id], references: [id])
   answers SessionAnswer[]
@@ -257,6 +263,10 @@ enum SessionMode {
   practice
   exam
   review
+  // Adaptive assessment proving a LearningObjective. Reuses the whole quiz
+  // machinery (grading, offline queue, XP, results screen) rather than a parallel
+  // assessment engine; `MasteryAttempt.session_id` links back to the attempt.
+  mastery_check
 }
 
 model SessionAnswer {
@@ -435,7 +445,7 @@ model Broadcast {
   status          BroadcastStatus @default(queued)
   created_at      DateTime        @default(now())
 
-  institution Institution   @relation(fields: [institution_id], references: [id])
+  institution Institution     @relation(fields: [institution_id], references: [id])
   deliveries  EmailDelivery[]
 
   @@map("broadcasts")
@@ -546,18 +556,18 @@ enum ParseStatus {
 }
 
 model StudyRoom {
-  id              String   @id @default(uuid())
-  institution_id  String
-  name            String
-  description     String?  @db.Text
-  is_private      Boolean  @default(false)
-  passcode        String?
-  created_by      String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id             String   @id @default(uuid())
+  institution_id String
+  name           String
+  description    String?  @db.Text
+  is_private     Boolean  @default(false)
+  passcode       String?
+  created_by     String
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
-  institution  Institution @relation(fields: [institution_id], references: [id])
-  creator      User        @relation("RoomCreator", fields: [created_by], references: [id])
+  institution  Institution            @relation(fields: [institution_id], references: [id])
+  creator      User                   @relation("RoomCreator", fields: [created_by], references: [id])
   participants StudyRoomParticipant[]
 
   @@index([institution_id, created_at])
@@ -565,14 +575,177 @@ model StudyRoom {
 }
 
 model StudyRoomParticipant {
-  id         String   @id @default(uuid())
-  room_id    String
-  user_id    String
-  joined_at  DateTime @default(now())
+  id        String   @id @default(uuid())
+  room_id   String
+  user_id   String
+  joined_at DateTime @default(now())
 
   room StudyRoom @relation(fields: [room_id], references: [id], onDelete: Cascade)
   user User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([room_id, user_id])
   @@map("study_room_participants")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ADAPTIVE LEARNING ENGINE (M7 item 4)
+//
+// Turns the study planner from a scheduler into a tutor. The core shift: progress
+// is evidence of mastery, not elapsed time or a self-report checkbox.
+//
+// A learner's own materials are parsed into a syllabus tree (SyllabusNode), which
+// yields granular LearningObjectives. An objective only advances when an adaptive
+// assessment proves it — recorded as a MasteryAttempt. Those assessments reuse
+// QuizSession (SessionMode.mastery_check) rather than duplicating the quiz engine.
+// ══════════════════════════════════════════════════════════════════════════════
+
+enum ResourceKind {
+  textbook
+  notes
+  pdf
+  outline
+  past_questions
+  video_playlist
+}
+
+enum ObjectiveState {
+  not_started
+  learning
+  practicing
+  verified
+  mastered
+}
+
+/// Bloom's Taxonomy level an objective sits at. Drives assessment mix — a
+/// `remember` objective is tested by recall, `apply` by exam-style problems.
+enum BloomLevel {
+  remember
+  understand
+  apply
+  analyze
+  evaluate
+  create
+}
+
+/// A learning material the student actually studies from. Plans are generated
+/// against these, so tasks map to real chapters instead of generic topic names.
+model LearningResource {
+  id             String       @id @default(uuid())
+  user_id        String
+  institution_id String
+  title          String
+  kind           ResourceKind
+  /// Uploaded file (same bucket as avatars — see lib/s3.ts).
+  file_url       String?
+  /// External material: a course outline URL, a video playlist.
+  source_url     String?
+  /// Free-text course association, e.g. "PHY 201". Not a Question.course_code FK:
+  /// a student's own notes need not correspond to a bank course.
+  course_code    String?
+  parse_status   ParseStatus  @default(processing)
+  parse_error    String?
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
+
+  user       User                @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  nodes      SyllabusNode[]
+  objectives LearningObjective[]
+
+  @@index([user_id, created_at])
+  @@map("learning_resources")
+}
+
+/// One node of a resource's extracted structure — a chapter, section or unit.
+/// Self-referencing so a chapter can own its sections.
+model SyllabusNode {
+  id          String  @id @default(uuid())
+  resource_id String
+  parent_id   String?
+  title       String
+  /// Sort order among siblings.
+  ordinal     Int
+  /// 0 = top level (chapter), 1 = section, and so on.
+  depth       Int     @default(0)
+  page_start  Int?
+  page_end    Int?
+
+  resource   LearningResource    @relation(fields: [resource_id], references: [id], onDelete: Cascade)
+  parent     SyllabusNode?       @relation("NodeChildren", fields: [parent_id], references: [id], onDelete: Cascade)
+  children   SyllabusNode[]      @relation("NodeChildren")
+  objectives LearningObjective[]
+
+  @@index([resource_id, ordinal])
+  @@index([parent_id])
+  @@map("syllabus_nodes")
+}
+
+/// The unit of progress. Replaces "topic completed" with something assessable.
+model LearningObjective {
+  id          String         @id @default(uuid())
+  user_id     String
+  resource_id String?
+  node_id     String?
+  subject     String
+  /// The objective itself, phrased so it can be tested — e.g.
+  /// "Derive the ideal gas law from kinetic theory".
+  statement   String
+  bloom_level BloomLevel     @default(understand)
+  state       ObjectiveState @default(not_started)
+
+  /// 0..1, exponentially-weighted over attempts so recent evidence dominates.
+  mastery_score Float    @default(0)
+  /// 0..1 consistency signal — low variance across attempts, not a self-report.
+  confidence    Float    @default(0)
+  attempts      Int      @default(0)
+  /// Concepts the learner has repeatedly missed; seeds targeted re-practice and
+  /// the next assessment's question mix.
+  weak_concepts String[]
+
+  /// Relative exam weight for readiness/priority maths. 1 = normal.
+  weight Float @default(1)
+
+  last_attempt_at  DateTime?
+  last_verified_at DateTime?
+  /// Spaced repetition due date. Passing it decays mastery back toward
+  /// `practicing` — a single good score the day you read the chapter is not
+  /// mastery, and this is what makes progress academically defensible.
+  next_review_at   DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user         User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  resource     LearningResource? @relation(fields: [resource_id], references: [id], onDelete: SetNull)
+  node         SyllabusNode?     @relation(fields: [node_id], references: [id], onDelete: SetNull)
+  attempts_log MasteryAttempt[]
+
+  @@index([user_id, state])
+  @@index([user_id, next_review_at])
+  @@index([node_id])
+  @@map("learning_objectives")
+}
+
+/// One assessment of one objective. Append-only: the audit trail behind a claim
+/// that the student has demonstrated understanding.
+model MasteryAttempt {
+  id           String  @id @default(uuid())
+  objective_id String
+  user_id      String
+  /// The mastery_check QuizSession that produced this. Null only if the session
+  /// row was pruned.
+  session_id   String?
+
+  score_percent Float
+  /// Threshold in force AT THE TIME, so later policy changes can't retroactively
+  /// pass or fail a historical attempt.
+  threshold     Float
+  passed        Boolean
+  weak_concepts String[]
+  created_at    DateTime @default(now())
+
+  objective LearningObjective @relation(fields: [objective_id], references: [id], onDelete: Cascade)
+
+  @@index([objective_id, created_at])
+  @@index([user_id, created_at])
+  @@map("mastery_attempts")
 }

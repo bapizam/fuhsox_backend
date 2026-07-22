@@ -180,6 +180,14 @@ export interface IAIQuestion extends Document {
   difficulty: 'easy' | 'medium' | 'hard';
   quality_flag: 'good' | 'flagged';
   flag_reason?: string;
+  /**
+   * Set only for adaptive mastery-check questions (M7 item 4). Tags this doc as
+   * part of one LearningObjective's cached assessment pool, so repeat attempts
+   * draw from it instead of paying another generation call.
+   */
+  objective_id?: string;
+  /** Bloom level this question targets — drives the per-level partial credit. */
+  bloom_level?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -197,6 +205,8 @@ const AIQuestionSchema = new Schema<IAIQuestion>(
     difficulty:     { type: String, enum: ['easy', 'medium', 'hard'], required: true },
     quality_flag:   { type: String, enum: ['good', 'flagged'], default: 'good' },
     flag_reason:    { type: String },
+    objective_id:   { type: String, index: true },
+    bloom_level:    { type: String },
   },
   { timestamps: true },
 );

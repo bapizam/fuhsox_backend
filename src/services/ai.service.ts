@@ -522,6 +522,255 @@ function parseGeneratedQuestions(
   }
 }
 
+// ─── Adaptive Learning Engine (M7 item 4) ──────────────────────────────────────
+
+const SYLLABUS_SYSTEM_PROMPT = `You are an academic librarian who extracts the structure of study material.
+You return ONLY valid JSON. You never invent chapters that are not present in the text.`;
+
+const OBJECTIVES_SYSTEM_PROMPT = `You are an expert curriculum designer for Nigerian university health sciences students.
+You write granular, ASSESSABLE learning objectives — each one must be provable by a question.
+Never write vague objectives like "understand the topic". Start each with an action verb
+appropriate to its Bloom level (define, explain, calculate, derive, differentiate, evaluate).
+You return ONLY valid JSON.`;
+
+/** Charge one AI call against the shared daily budget, or throw AI_LIMIT_REACHED. */
+async function consumeAIBudget(userId: string, institutionId: string): Promise<void> {
+  const institution = await prisma.institution.findUnique({
+    where:  { id: institutionId },
+    select: { ai_daily_limit: true },
+  });
+
+  const dailyLimit   = institution?.ai_daily_limit ?? 20;
+  const redisKey     = REDIS_KEYS.AI_DAILY(userId, getTodayWAT());
+  const currentUsage = await getCount(redisKey);
+
+  if (currentUsage >= dailyLimit) {
+    throw new AppError(
+      429,
+      'AI_LIMIT_REACHED',
+      `Daily AI limit of ${dailyLimit} reached. Resets at midnight WAT.`,
+    );
+  }
+
+  await incrWithExpiry(redisKey, getEndOfDayTTL());
+}
+
+/** Strip markdown fences the models sometimes wrap JSON in. */
+function parseJSONResponse<T>(text: string, what: string): T {
+  try {
+    const cleaned = text
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
+    return JSON.parse(cleaned) as T;
+  } catch {
+    throw new AppError(500, 'INTERNAL_ERROR', `AI returned malformed ${what}`);
+  }
+}
+
+/**
+ * Chapter/section structure from a document's text. ONE call per resource —
+ * `learning.service` caches the result as SyllabusNode rows and never re-asks.
+ */
+export async function extractSyllabusStructure(params: {
+  text:          string;
+  title:         string;
+  userId:        string;
+  institutionId: string;
+}): Promise<{ title: string; sections?: string[] }[]> {
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const response = await callAI({
+    system:   SYLLABUS_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `Extract the chapter structure of this study material titled "${params.title}".
+Return ONLY JSON: { "chapters": [{ "title": "...", "sections": ["...", "..."] }] }
+Use the document's own chapter titles. Omit "sections" when a chapter has none.
+If the text has no discernible chapter structure, return { "chapters": [] }.
+
+TEXT:
+${params.text.substring(0, 15000)}`,
+      },
+    ],
+    max_tokens: 4096,
+  });
+
+  const parsed = parseJSONResponse<{ chapters?: { title?: unknown; sections?: unknown }[] }>(
+    response.text,
+    'syllabus structure',
+  );
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'study_plan',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  return (parsed.chapters ?? [])
+    .filter((c): c is { title: string; sections?: unknown } => typeof c.title === 'string' && c.title.trim().length > 0)
+    .map((c) => ({
+      title: c.title.trim(),
+      sections: Array.isArray(c.sections)
+        ? c.sections.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        : undefined,
+    }));
+}
+
+/**
+ * Assessable learning objectives for one chapter. ONE call per chapter, on first
+ * open — `learning.service` caches the rows, so this is never charged twice.
+ */
+export async function generateLearningObjectives(params: {
+  chapterTitle:  string;
+  resourceTitle: string;
+  subject:       string;
+  userId:        string;
+  institutionId: string;
+}): Promise<{ statement: string; bloom_level: BloomLevelName }[]> {
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const response = await callAI({
+    system:   OBJECTIVES_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `Write 4-7 learning objectives for the chapter "${params.chapterTitle}" from "${params.resourceTitle}" (subject: ${params.subject}).
+Each objective must be specific enough that a short exam question could prove it.
+Spread them across Bloom levels, always including at least one at "apply" or above.
+Return ONLY JSON:
+{ "objectives": [{ "statement": "...", "bloom_level": "remember|understand|apply|analyze|evaluate|create" }] }`,
+      },
+    ],
+    max_tokens: 2048,
+  });
+
+  const parsed = parseJSONResponse<{ objectives?: { statement?: unknown; bloom_level?: unknown }[] }>(
+    response.text,
+    'learning objectives',
+  );
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'study_plan',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  return (parsed.objectives ?? [])
+    .filter((o): o is { statement: string; bloom_level?: unknown } =>
+      typeof o.statement === 'string' && o.statement.trim().length > 0)
+    .map((o) => ({
+      statement:   o.statement.trim(),
+      bloom_level: normalizeBloom(o.bloom_level),
+    }));
+}
+
+type BloomLevelName = 'remember' | 'understand' | 'apply' | 'analyze' | 'evaluate' | 'create';
+
+const BLOOM_LEVELS: readonly BloomLevelName[] = [
+  'remember', 'understand', 'apply', 'analyze', 'evaluate', 'create',
+];
+
+function normalizeBloom(value: unknown): BloomLevelName {
+  const found = BLOOM_LEVELS.find((level) => level === value);
+  return found ?? 'understand';
+}
+
+/**
+ * The cached assessment pool for one objective, generated across the Bloom mix in
+ * ONE call. Every later attempt draws from these rows, so a student can retry
+ * without spending more budget.
+ */
+export async function generateMasteryQuestions(params: {
+  objective:     string;
+  subject:       string;
+  poolSize:      number;
+  userId:        string;
+  institutionId: string;
+  objectiveId:   string;
+}): Promise<{ id: string; bloom_level: string }[]> {
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const response = await callAI({
+    system:   QUESTION_GENERATION_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `Write ${params.poolSize} multiple-choice questions that test this single learning objective:
+"${params.objective}" (subject: ${params.subject})
+
+Spread them across Bloom levels — roughly a quarter each at "remember", "understand",
+"apply" and "analyze". The "apply" and "analyze" questions must be exam-style problems,
+not recall rephrased. Do not repeat the same fact across questions.
+
+Return ONLY JSON:
+{ "questions": [{ "question_text": "...", "options": [{"key":"A","text":"..."}],
+  "correct_answer": "A", "explanation": "...",
+  "bloom_level": "remember|understand|apply|analyze",
+  "difficulty": "easy|medium|hard" }] }`,
+      },
+    ],
+    max_tokens: 8192,
+  });
+
+  const parsed = parseJSONResponse<{ questions?: Record<string, unknown>[] }>(
+    response.text,
+    'mastery questions',
+  );
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'question_generation',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  const rows = (parsed.questions ?? [])
+    .filter((q) => typeof q.question_text === 'string' && typeof q.correct_answer === 'string')
+    .map((q) => ({
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      topic:          params.subject,
+      question_type:  'mcq' as const,
+      question_text:  q.question_text as string,
+      options:        Array.isArray(q.options) ? (q.options as { key: string; text: string }[]) : [],
+      correct_answer: q.correct_answer as string,
+      explanation:    typeof q.explanation === 'string' ? q.explanation : undefined,
+      difficulty:     q.difficulty === 'easy' || q.difficulty === 'hard' ? q.difficulty : 'medium',
+      quality_flag:   'good' as const,
+      objective_id:   params.objectiveId,
+      bloom_level:    normalizeBloom(q.bloom_level),
+    }));
+
+  if (rows.length === 0) {
+    throw new AppError(500, 'INTERNAL_ERROR', 'AI returned no usable questions for this objective');
+  }
+
+  const saved = await AIQuestion.insertMany(rows);
+
+  logger.info(
+    { objectiveId: params.objectiveId, count: saved.length, provider: response.provider },
+    'Mastery question pool generated',
+  );
+
+  return saved.map((q) => ({
+    id:          q._id.toString(),
+    bloom_level: q.bloom_level ?? 'understand',
+  }));
+}
+
 // ─── Service export ────────────────────────────────────────────────────────────
 
 export const aiService = {
@@ -533,4 +782,7 @@ export const aiService = {
   getStudyPlan,
   getAIFeedbackHistory,
   flagAIQuestion,
+  extractSyllabusStructure,
+  generateLearningObjectives,
+  generateMasteryQuestions,
 };

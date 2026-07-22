@@ -4,6 +4,7 @@ import userRoutes from './user.routes';
 import questionRoutes from './question.routes';
 import sessionRoutes from './session.routes';
 import aiRoutes from './ai.routes';
+import learningRoutes from './learning.routes';
 import feedRoutes from './feed.routes';
 import adminRoutes from './admin.routes';
 import roomsRoutes from './rooms.routes';
@@ -54,6 +55,10 @@ router.use('/ai', aiRoutes);
 
 // ─── Study & Progress ─────────────────────────────────────────────────────────
 router.use('/study', studyRouter);
+// Adaptive learning engine (M7 item 4). Coexists with /study rather than
+// replacing it: schedules answer "when do I study", objectives answer "what have
+// I actually proven".
+router.use('/learning', learningRoutes);
 router.use('/rooms', roomsRoutes);
 router.use('/leaderboard', leaderboardRouter);
 

@@ -43,6 +43,8 @@ export const REDIS_KEYS = {
   PASSWORD_RESET: (token: string) => `pwd_reset:${token}`,
   REPORT_COUNT: (postId: string) => `post_reports:${postId}`,
   SCHEDULE_CHECKIN: (scheduleId: string, date: string) => `schedule_checkin:${scheduleId}:${date}`,
+  /** Mastery-check attempts started today, per objective (anti-grind cap). */
+  MASTERY_ATTEMPTS: (objectiveId: string, date: string) => `mastery_attempts:${objectiveId}:${date}`,
 } as const;
 
 // ─── Cache TTLs (seconds) ──────────────────────────────────────────────────────
@@ -58,6 +60,39 @@ export const TTL = {
 export const PAGINATION = {
   DEFAULT_LIMIT: 12,
   MAX_LIMIT: 100,
+} as const;
+
+// ─── Adaptive Mastery Checks (M7 item 4) ───────────────────────────────────────
+export const MASTERY_CHECK = {
+  /**
+   * Questions per assessment. At 8, a single miss is 87.5% — a genuine near-miss
+   * against a 90% bar rather than an all-or-nothing coin flip. At 5 questions, 90%
+   * would silently mean "perfect score required".
+   */
+  QUESTION_COUNT: 8,
+  /**
+   * Questions generated and cached per objective. Drawing 8 from 16 keeps repeat
+   * attempts from being the same paper twice while costing ONE generation call for
+   * the objective's whole lifetime.
+   */
+  POOL_SIZE: 16,
+  /**
+   * Attempts per objective per day. Enough to genuinely retry after revising, few
+   * enough that brute-forcing the pool isn't a strategy — otherwise "verified"
+   * degrades into "kept trying until it passed", which is the exact failure this
+   * milestone exists to fix.
+   */
+  MAX_ATTEMPTS_PER_DAY: 3,
+  /**
+   * Bloom mix for one assessment, summing to QUESTION_COUNT. Recall alone cannot
+   * demonstrate understanding, so every assessment reaches into application.
+   */
+  BLOOM_MIX: [
+    { level: 'remember', count: 2, difficulty: 'easy' },
+    { level: 'understand', count: 2, difficulty: 'medium' },
+    { level: 'apply', count: 2, difficulty: 'medium' },
+    { level: 'analyze', count: 2, difficulty: 'hard' },
+  ],
 } as const;
 
 // ─── File Upload Limits ────────────────────────────────────────────────────────
