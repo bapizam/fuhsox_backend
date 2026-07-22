@@ -35,6 +35,8 @@ export const XP = {
 export const REDIS_KEYS = {
   OTP_RATE: (email: string) => `otp:${email}`,
   AI_DAILY: (userId: string, date: string) => `ai_daily:${userId}:${date}`,
+  /** Failover calls today — project-wide, deliberately not keyed by user. */
+  AI_FALLBACK_DAILY: (date: string) => `ai_fallback_daily:${date}`,
   LEADERBOARD: (instId: string, scope: string, val?: string) =>
     `leaderboard:${instId}:${scope}${val ? `:${val}` : ''}`,
   ANALYTICS_OVERVIEW: (instId: string) => `analytics:overview:${instId}`,

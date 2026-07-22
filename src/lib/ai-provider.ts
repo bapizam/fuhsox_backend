@@ -1,6 +1,8 @@
 import { env } from '@config/env';
 import logger from '@lib/logger';
 import { classify, isCapacityFailure } from '@lib/ai-failure';
+import { incrWithExpiry, getEndOfDayTTL, getTodayWAT } from '@lib/redis';
+import { REDIS_KEYS } from '@config/constants';
 import { AppError } from '@typings/models';
 import type { Socket } from 'socket.io';
 
@@ -30,6 +32,35 @@ type Provider = 'claude' | 'gemini';
 function hasCredentials(provider: Provider): boolean {
   // ANTHROPIC_API_KEY is required by the env schema, so Claude is always usable.
   return provider === 'claude' ? true : Boolean(env.GEMINI_API_KEY);
+}
+
+/**
+ * Claim one unit of today's project-wide failover budget.
+ *
+ * Increments first and compares after, rather than reading then incrementing:
+ * two concurrent requests reading the same under-limit count would both pass a
+ * read-first check and both spend. Over-counting is the safe direction here.
+ *
+ * A claim is consumed even if the failover call then fails. Compensating for
+ * that would need a rollback path on every error branch, and erring toward
+ * under-spending is the right bias for a cost ceiling.
+ */
+async function claimFailoverBudget(): Promise<boolean> {
+  if (env.AI_FALLBACK_DAILY_LIMIT === 0) return false;
+
+  try {
+    const used = await incrWithExpiry(
+      REDIS_KEYS.AI_FALLBACK_DAILY(getTodayWAT()),
+      getEndOfDayTTL(),
+    );
+    return used <= env.AI_FALLBACK_DAILY_LIMIT;
+  } catch (err) {
+    // Fail open, matching how the per-user limit treats a Redis miss. Redis is
+    // already load-bearing for sessions and queues, so a hard failure here means
+    // the app is degraded anyway — refusing AI would not be the useful response.
+    logger.warn({ err }, 'Failover budget check failed, allowing failover');
+    return true;
+  }
 }
 
 const MAX_ATTEMPTS   = 3;
@@ -270,6 +301,17 @@ export async function callAI(params: AICompletionParams): Promise<AICompletionRe
       throw toAppError(err, primary);
     }
 
+    if (!(await claimFailoverBudget())) {
+      // Surface the ORIGINAL provider error, not a budget error: from the caller's
+      // side the AI is unavailable for exactly the reason it was before failover
+      // existed, and the 429 it already maps to carries the right retry semantics.
+      logger.error(
+        { primary, backup, limit: env.AI_FALLBACK_DAILY_LIMIT },
+        'Daily failover budget exhausted, not failing over',
+      );
+      throw toAppError(err, primary);
+    }
+
     logger.warn(
       { primary, backup, status: failure.status, dailyQuota: failure.dailyQuota },
       'AI provider out of capacity, failing over',
@@ -323,6 +365,14 @@ export async function streamFeedback(
     result = await withRetry(primary, () => invokeStream(primary), stillSilent);
   } catch (err) {
     if (streamed || !isCapacityFailure(classify(err)) || !hasCredentials(backup)) {
+      throw toAppError(err, primary);
+    }
+
+    if (!(await claimFailoverBudget())) {
+      logger.error(
+        { primary, backup, limit: env.AI_FALLBACK_DAILY_LIMIT },
+        'Daily failover budget exhausted, not failing over',
+      );
       throw toAppError(err, primary);
     }
 

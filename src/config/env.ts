@@ -33,6 +33,19 @@ const envSchema = z.object({
 
   AI_PROVIDER:  z.enum(['claude', 'gemini']).default('gemini'),
 
+  /**
+   * Ceiling on failover calls per day, counted across the WHOLE project.
+   *
+   * Failing over converts an exhausted free-tier quota into real spend on the
+   * backup provider, and `institution.ai_daily_limit` cannot bound that — it is
+   * per user, so N users each comfortably under their own limit still add up to
+   * an unbounded bill. This is the only guard that caps total cost.
+   *
+   * Env-tunable rather than a constant so the cap can be lowered mid-incident
+   * without a redeploy. Set to 0 to disable failover entirely.
+   */
+  AI_FALLBACK_DAILY_LIMIT: z.coerce.number().int().nonnegative().default(200),
+
   GEMINI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().startsWith('sk-ant-', 'ANTHROPIC_API_KEY must start with sk-ant-'),
   AI_DAILY_QUESTION_LIMIT: z.coerce.number().int().positive().default(20),
