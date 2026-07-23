@@ -769,6 +769,30 @@ async function main() {
   console.log('   Then check MailHog at http://localhost:8025\n');
 }
 
+// ─── Production guard ──────────────────────────────────────────────────────────
+
+/**
+ * STEP 1 of main() deletes every row in 22 tables. That is the right behaviour for
+ * a development fixture and catastrophic anywhere else — and this script had no
+ * other safety while being wired into the Render build command, so an ordinary
+ * deploy wiped production and replaced it with Ada and Emeka.
+ *
+ * Exits 0, not 1: the build command chains on `&&`, so a non-zero exit here would
+ * turn a correctly-skipped seed into a failed deploy.
+ */
+function seedingIsAllowed(): boolean {
+  if (process.env.ALLOW_DESTRUCTIVE_SEED === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
+if (!seedingIsAllowed()) {
+  console.log(
+    '⏭️  Skipping destructive seed: NODE_ENV=production.\n' +
+      '   Set ALLOW_DESTRUCTIVE_SEED=true to override — this DELETES ALL DATA.',
+  );
+  process.exit(0);
+}
+
 main()
   .catch((err) => {
     console.error('\n❌ Seeding failed:', err);
