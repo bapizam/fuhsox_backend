@@ -1,16 +1,6 @@
 import prisma from '@config/database';
 import { AppError } from '@typings/models';
-import {
-  Post,
-  Comment,
-  Message,
-  RoomMessage,
-  AIFeedback,
-  AIQuestion,
-  ResourceChunk,
-  MicroLesson,
-  StudyPlan,
-} from '../../mongo/schemas';
+import mongoose from 'mongoose';
 import { notificationService } from './notification.service';
 import { gamificationService } from './gamification.service';
 import { uploadAvatar, deleteFromS3, extractKeyFromUrl } from '@lib/s3';
@@ -462,6 +452,65 @@ export async function respondToConnection(
 // ─── Delete Account (NDPR right-to-delete) ───────────────────────────────────────
 
 /**
+ * Fields by which a Mongo document names the user it belongs to. Posts and comments
+ * use `author_id`, chat uses `sender_id`/`receiver_id`, and everything the adaptive
+ * engine writes uses `user_id`.
+ */
+const MONGO_USER_FIELDS = ['user_id', 'author_id', 'sender_id', 'receiver_id'] as const;
+
+/**
+ * The only field this purge needs typed. `$pull` cannot be expressed against the
+ * driver's bare `Document`, whose values are `any` — the operator needs to see that
+ * `likes` is an array of strings before it will accept a string to pull from it.
+ */
+interface LikeableDoc {
+  likes?: string[];
+}
+
+/**
+ * Delete every Mongo document belonging to a user.
+ *
+ * Collections are enumerated from the LIVE connection rather than imported from the
+ * schema module, because an import list is a hand-maintained inventory: it compiles
+ * perfectly well while silently missing whichever collection was added most
+ * recently. That is exactly how direct messages, AI feedback, generated questions,
+ * resource chunks and study plans came to survive account deletion — the code named
+ * three collections and the app had nine. Enumerating means a new collection is
+ * covered the day it appears, with nobody having to remember this function exists.
+ */
+async function purgeMongoForUser(userId: string, ownedRoomIds: string[]): Promise<void> {
+  const db = mongoose.connection.db;
+
+  if (!db) {
+    logger.warn({ userId }, 'No Mongo handle — that user\'s documents were NOT purged');
+    return;
+  }
+
+  const ownedByUser = { $or: MONGO_USER_FIELDS.map((field) => ({ [field]: userId })) };
+
+  const names = (await db.listCollections().toArray()).map((info) => info.name);
+
+  for (const name of names) {
+    if (name.startsWith('system.')) continue;
+
+    const collection = db.collection(name);
+
+    await collection.deleteMany(ownedByUser);
+
+    // Chat history in rooms the user owned. Those messages are other people's, but
+    // the room itself is gone from Postgres, so nothing would ever read them again.
+    if (ownedRoomIds.length > 0) {
+      await collection.deleteMany({ room_id: { $in: ownedRoomIds } });
+    }
+
+    // Likes left on other people's content, so their counts drop.
+    await db
+      .collection<LikeableDoc>(name)
+      .updateMany({ likes: userId }, { $pull: { likes: userId } });
+  }
+}
+
+/**
  * Erase an account and everything attached to it, across all four stores.
  *
  * This used to ANONYMIZE: it overwrote the PII columns and set `deleted_at`,
@@ -524,25 +573,7 @@ export async function deleteAccount(userId: string): Promise<void> {
   // here would report a failure for a deletion that did happen. The stores are
   // independent — one failing must not skip the others.
   try {
-    await Promise.all([
-      Post.deleteMany({ author_id: userId }),
-      Comment.deleteMany({ author_id: userId }),
-      // Likes the user left on OTHER people's content, so counts drop.
-      Post.updateMany({ likes: userId }, { $pull: { likes: userId } }),
-      Comment.updateMany({ likes: userId }, { $pull: { likes: userId } }),
-      // Both directions: a DM is the sender's data and the recipient's alike.
-      Message.deleteMany({ $or: [{ sender_id: userId }, { receiver_id: userId }] }),
-      // Messages they wrote anywhere, plus every message in rooms they owned.
-      RoomMessage.deleteMany({ sender_id: userId }),
-      createdRoomIds.length > 0
-        ? RoomMessage.deleteMany({ room_id: { $in: createdRoomIds } })
-        : Promise.resolve(),
-      AIFeedback.deleteMany({ user_id: userId }),
-      AIQuestion.deleteMany({ user_id: userId }),
-      ResourceChunk.deleteMany({ user_id: userId }),
-      MicroLesson.deleteMany({ user_id: userId }),
-      StudyPlan.deleteMany({ user_id: userId }),
-    ]);
+    await purgeMongoForUser(userId, createdRoomIds);
   } catch (err) {
     logger.error({ err, userId }, 'Deleted-account Mongo cleanup failed');
   }
