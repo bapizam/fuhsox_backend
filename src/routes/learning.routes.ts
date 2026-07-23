@@ -12,8 +12,12 @@ import {
   listObjectives,
   generateObjectives,
   startMasteryCheck,
+  startTopicMasteryCheck,
   completeMasteryCheck,
   getLearnerModel,
+  recordExamOutcome,
+  listExamOutcomes,
+  deleteExamOutcome,
 } from '@controllers/learning.controller';
 
 const router = Router();
@@ -54,7 +58,22 @@ router.post('/nodes/:nodeId/objectives', generateObjectives);
 // POST /api/v1/learning/objectives/:id/mastery-check — start. Returns a normal
 //      QuizSession id the existing runner plays unmodified.
 router.post('/objectives/:id/mastery-check', startMasteryCheck);
+// POST /api/v1/learning/topic-check — start a check from a plan task's topic.
+//      Upserts a topic objective, then behaves exactly like the route above. This
+//      is the plan's evidence gate that replaced the "I've studied" checkbox.
+router.post('/topic-check', startTopicMasteryCheck);
 // POST /api/v1/learning/objectives/:id/mastery-check/complete — score + advance.
 router.post('/objectives/:id/mastery-check/complete', completeMasteryCheck);
+
+// ─── Exam outcomes ────────────────────────────────────────────────────────────
+// The only ground truth in the system: everything else is AI-generated questions
+// scored against AI-generated answers. Collection only for now — the model that
+// calibrates readiness against these grades is a later phase.
+// GET    /api/v1/learning/exam-outcomes
+router.get('/exam-outcomes', listExamOutcomes);
+// POST   /api/v1/learning/exam-outcomes      — self-reported grade
+router.post('/exam-outcomes', recordExamOutcome);
+// DELETE /api/v1/learning/exam-outcomes/:id  — a mistyped grade must be removable
+router.delete('/exam-outcomes/:id', deleteExamOutcome);
 
 export default router;

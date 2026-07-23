@@ -80,6 +80,7 @@ model User {
   study_room_members   StudyRoomParticipant[]
   learning_resources   LearningResource[]
   learning_objectives  LearningObjective[]
+  exam_outcomes        ExamOutcome[]
 
   @@index([institution_id])
   @@index([last_active_at])
@@ -278,6 +279,16 @@ model SessionAnswer {
   time_taken_ms  Int
   ai_feedback_id String? // MongoDB document ID
   answered_at    DateTime @default(now())
+
+  /// How sure the student SAID they were, 1–5, captured before the verdict is
+  /// revealed (reformation Phase 3). Null on every historical row and wherever the
+  /// question isn't asked.
+  ///
+  /// Deliberately NOT the same thing as `LearningObjective.confidence`, which is a
+  /// variance-of-recent-scores proxy the system infers. This is the student's own
+  /// claim — and the gap between the two is the calibration signal, which is both a
+  /// real measure and one of the best-evidenced study interventions on its own.
+  confidence     Int?
 
   session QuizSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
 
@@ -709,7 +720,27 @@ model LearningObjective {
   /// Spaced repetition due date. Passing it decays mastery back toward
   /// `practicing` — a single good score the day you read the chapter is not
   /// mastery, and this is what makes progress academically defensible.
+  ///
+  /// Since Phase 3 this is written by FSRS from the card state below, rather than
+  /// by a flat 3/14-day rule. Everything that READS it (effectiveState,
+  /// revisionPriority, due_for_review) is unchanged — the scheduling policy moved,
+  /// the schedule's representation did not.
   next_review_at   DateTime?
+
+  /// FSRS card state (reformation Phase 3 — `ts-fsrs`, MIT).
+  ///
+  /// Per-item scheduling: each objective's interval comes from ITS OWN observed
+  /// difficulty for THIS student, replacing one flat rule applied to everything.
+  /// All nullable/defaulted so objectives predating Phase 3 keep working — a row
+  /// with a null stability is rebuilt from an empty card on its next attempt, so
+  /// there is no backfill migration.
+  fsrs_stability  Float?
+  fsrs_difficulty Float?
+  fsrs_reps       Int    @default(0)
+  fsrs_lapses     Int    @default(0)
+  /// ts-fsrs State: 0 New, 1 Learning, 2 Review, 3 Relearning.
+  fsrs_state      Int    @default(0)
+  fsrs_last_review DateTime?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -748,4 +779,48 @@ model MasteryAttempt {
   @@index([objective_id, created_at])
   @@index([user_id, created_at])
   @@map("mastery_attempts")
+}
+
+/// A real exam result, self-reported by the student — the ONLY ground truth this
+/// system has ever collected.
+///
+/// Everything upstream is a closed loop: AI writes the questions, AI provides the
+/// answer key, the student is scored against it, and a heuristic emits a readiness
+/// number that nothing ever checks. `exam_readiness = coverage × depth` is a
+/// reasonable heuristic carrying more authority than it has earned — it could be
+/// systematically over- or under-confident and no one would know.
+///
+/// These rows are collection ONLY (reformation Phase 2). The model that calibrates
+/// predicted readiness against observed grades is a later phase; until it exists,
+/// the UI labels readiness an estimate. Self-reported grades are noisy, and they
+/// are still infinitely more signal than a loop that never touches reality.
+model ExamOutcome {
+  id             String @id @default(uuid())
+  user_id        String
+  institution_id String
+
+  /// Free text, matched to a StudySchedule.subject or a resource's course by name
+  /// rather than by FK — a student can report a grade for anything they sat.
+  subject     String
+  course_code String?
+
+  /// 0..100, as the student reports it.
+  score_percent Float
+  /// Optional letter/class the school actually issued ("A", "B2", "Pass").
+  grade_label   String?
+  exam_date     DateTime
+
+  /// Snapshot of the readiness the model predicted when the grade was reported.
+  /// Stored HERE rather than recomputed later, because readiness decays — asking
+  /// "what did we predict?" months on would otherwise give a different answer than
+  /// the one that was actually shown to the student.
+  predicted_readiness Float?
+
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, exam_date])
+  @@index([institution_id, exam_date])
+  @@map("exam_outcomes")
 }

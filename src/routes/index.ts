@@ -5,6 +5,7 @@ import questionRoutes from './question.routes';
 import sessionRoutes from './session.routes';
 import aiRoutes from './ai.routes';
 import learningRoutes from './learning.routes';
+import configRoutes from './config.routes';
 import feedRoutes from './feed.routes';
 import adminRoutes from './admin.routes';
 import roomsRoutes from './rooms.routes';
@@ -38,6 +39,9 @@ router.get('/health/queues', authenticate, superAdminOnly, asyncHandler(async (_
 
 // ─── Authentication ────────────────────────────────────────────────────────────
 router.use('/auth', authRoutes);
+
+// ─── Reference Data ─────────────────────────────────────────────────────────────
+router.use('/config', configRoutes);
 
 // ─── Users & Social ────────────────────────────────────────────────────────────
 router.use('/users', userRoutes);

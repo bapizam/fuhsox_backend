@@ -73,11 +73,25 @@ export const MASTERY_CHECK = {
    */
   QUESTION_COUNT: 8,
   /**
-   * Questions generated and cached per objective. Drawing 8 from 16 keeps repeat
-   * attempts from being the same paper twice while costing ONE generation call for
-   * the objective's whole lifetime.
+   * Questions generated and cached per objective on FIRST use. Drawing 8 from 16
+   * keeps repeat attempts from being the same paper twice while costing ONE
+   * generation call to seed the objective.
    */
   POOL_SIZE: 16,
+  /**
+   * Items added when a student has exhausted the unseen part of a pool
+   * (reformation Phase 2). A fixed 16-item pool meant a motivated student could
+   * memorize it across days — the daily cap throttles grinding per day, not over
+   * time. Growth is lazy: it costs a call only once the student has earned it.
+   */
+  GROWTH_BATCH: 8,
+  /**
+   * Ceiling on a single objective's pool. Growth has to stop somewhere or a
+   * determined student could mint AI calls indefinitely against one objective;
+   * 40 items is roughly five non-overlapping papers, well past the point where
+   * memorization is a cheaper strategy than learning.
+   */
+  MAX_POOL_SIZE: 40,
   /**
    * Attempts per objective per day. Enough to genuinely retry after revising, few
    * enough that brute-forcing the pool isn't a strategy — otherwise "verified"
@@ -117,10 +131,17 @@ export const RISK = {
 
 // ─── Cron Schedules (UTC) ──────────────────────────────────────────────────────
 export const CRON = {
-  STUDY_REMINDER: '0 17 * * *',  // 5 PM UTC = 6 PM WAT
+  // Hourly at :00 UTC. The job itself matches each schedule's preferred start
+  // HOUR (in WAT) so a student is reminded around their own study time, not a
+  // fixed 6 PM for everyone. The per-day frequency guard stops the other 23
+  // hourly runs from re-sending.
+  STUDY_REMINDER: '0 * * * *',
   RISK_FLAG:      '0 1 * * *',   // 1 AM UTC = 2 AM WAT
   ANALYTICS:      '0 0 * * *',   // Midnight UTC
 } as const;
+
+/** West Africa Time is UTC+1 year-round (no DST). */
+export const WAT_OFFSET_MINUTES = 60;
 
 // ─── Timezone ──────────────────────────────────────────────────────────────────
 export const TIMEZONE = 'Africa/Lagos';

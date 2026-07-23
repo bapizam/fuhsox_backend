@@ -146,6 +146,27 @@ export const startMasteryCheck = asyncHandler(async (req: Request, res: Response
   res.status(201).json(ok(started));
 });
 
+const topicCheckSchema = z.object({
+  subject: z.string().min(1).max(255),
+  topic:   z.string().min(1).max(255),
+}).strict();
+
+/**
+ * Start a mastery check from a study-plan task's topic — the plan's evidence
+ * gate. Upserts a topic objective server-side, so the client only sends what it
+ * has (the task's subject + topic).
+ */
+export const startTopicMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
+  const body = topicCheckSchema.parse(req.body);
+  const started = await learningService.startTopicMasteryCheck({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    subject:       body.subject,
+    topic:         body.topic,
+  });
+  res.status(201).json(ok(started));
+});
+
 export const completeMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   const body = z.object({ session_id: z.string().uuid() }).strict().parse(req.body);
@@ -163,4 +184,46 @@ export const completeMasteryCheck = asyncHandler(async (req: Request, res: Respo
 
 export const getLearnerModel = asyncHandler(async (req: Request, res: Response) => {
   res.status(200).json(ok(await learningService.getLearnerModel(req.user.id)));
+});
+
+// ─── Exam outcomes (ground truth — reformation Phase 2) ───────────────────────
+
+const examOutcomeSchema = z.object({
+  subject:       z.string().min(1).max(255),
+  course_code:   z.string().max(32).optional(),
+  score_percent: z.number().min(0).max(100),
+  grade_label:   z.string().max(16).optional(),
+  /** Full ISO datetime, matching the study-schedule convention. */
+  exam_date:     z.string().datetime(),
+}).strict();
+
+/**
+ * Self-reported exam result — the only ground truth the engine collects.
+ *
+ * Deliberately unvalidated against anything: a student's own grade is noisy, and a
+ * noisy real signal beats a closed loop that never touches reality. The
+ * calibration model that compares these against predicted readiness is a later
+ * phase; this endpoint only starts the collection.
+ */
+export const recordExamOutcome = asyncHandler(async (req: Request, res: Response) => {
+  const body = examOutcomeSchema.parse(req.body);
+  const outcome = await learningService.recordExamOutcome({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    subject:       body.subject,
+    courseCode:    body.course_code,
+    scorePercent:  body.score_percent,
+    gradeLabel:    body.grade_label,
+    examDate:      new Date(body.exam_date),
+  });
+  res.status(201).json(ok(outcome));
+});
+
+export const listExamOutcomes = asyncHandler(async (req: Request, res: Response) => {
+  res.status(200).json(ok(await learningService.listExamOutcomes(req.user.id)));
+});
+
+export const deleteExamOutcome = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  res.status(200).json(ok(await learningService.deleteExamOutcome(id, req.user.id)));
 });

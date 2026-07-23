@@ -189,6 +189,12 @@ const answerSchema = z.object({
   question_id:   z.string().min(24).max(36), // Allows both UUIDs and Mongo ObjectIds
   chosen_answer: z.string().min(1),
   time_taken_ms: z.number().int().positive(),
+  /**
+   * Self-reported confidence 1–5, captured BEFORE the verdict (reformation
+   * Phase 3). Optional because it is only asked on mastery checks, and because
+   * every client that predates it must keep working.
+   */
+  confidence:    z.number().int().min(1).max(5).optional(),
 });
 
 export const createSession = asyncHandler(async (req: Request, res: Response) => {
@@ -214,6 +220,7 @@ export const submitAnswer = asyncHandler(async (req: Request, res: Response) => 
     questionId:   body.question_id,
     chosenAnswer: body.chosen_answer,
     timeTakenMs:  body.time_taken_ms,
+    confidence:   body.confidence,
   });
   res.status(200).json(ok(result));
 });

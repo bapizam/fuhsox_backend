@@ -5,7 +5,47 @@ import { calculateScorePercent } from '@utils/xp';
 import { gamificationService } from './gamification.service';
 import logger from '@lib/logger';
 import { getIO } from '@lib/socket-ref';
-import { aiService } from './ai.service';
+import { aiService, exactMatchGrade, type AnswerToGrade } from './ai.service';
+
+// ─── Empirical difficulty (reformation Phase 2) ────────────────────────────────
+
+/**
+ * Record what actually happened to an AI-generated item.
+ *
+ * `AIQuestion.difficulty` is the LLM's self-label; these counters are the evidence.
+ * Once an item has been answered enough times, `correct_count / seen_count` is a
+ * real p-value and the mastery-check draw balances on THAT instead of the guess
+ * (see `utils/pool.ts`).
+ *
+ * A cross-store write on the grading path, so it is fire-and-forget: a Mongo blip
+ * must never fail an answer the student already gave. The counters are analytics,
+ * not the record of the attempt — that lives in `session_answers`.
+ */
+/**
+ * True when the student PRODUCES the answer rather than picking one. Everything
+ * that is not an MCQ is free-response — `short_answer`, `fill_blank`, `numeric`
+ * and the bank's `essay` — and none of them can be graded by string equality.
+ */
+function isFreeResponse(questionType: string | undefined): boolean {
+  return questionType !== undefined && questionType !== 'mcq';
+}
+
+function recordItemOutcomes(outcomes: { questionId: string; isCorrect: boolean }[]): void {
+  const mongoOutcomes = outcomes.filter((o) => /^[0-9a-fA-F]{24}$/.test(o.questionId));
+  if (mongoOutcomes.length === 0) return;
+
+  void AIQuestion.bulkWrite(
+    mongoOutcomes.map((o) => ({
+      updateOne: {
+        filter: { _id: o.questionId },
+        update: { $inc: { seen_count: 1, correct_count: o.isCorrect ? 1 : 0 } },
+      },
+    })),
+    { ordered: false },
+  ).catch((err: unknown) => {
+    logger.warn({ err, count: mongoOutcomes.length }, 'Failed to record item difficulty counters');
+  });
+}
 
 // ─── Fisher-Yates Shuffle ──────────────────────────────────────────────────────
 
@@ -130,6 +170,8 @@ export async function submitAnswer(params: {
   questionId:   string;
   chosenAnswer: string;
   timeTakenMs:  number;
+  /** Self-reported 1–5, captured before the verdict (reformation Phase 3). */
+  confidence?:  number;
 }) {
   const { sessionId, userId, questionId, chosenAnswer, timeTakenMs } = params;
 
@@ -172,6 +214,9 @@ export async function submitAnswer(params: {
     explanation?:   string;
     course_code:    string;
     topic:          string;
+    /** Non-MCQ items need the AI grader, not string equality (Phase 2). */
+    question_type?: string;
+    rubric?:        string;
   } | null = null;
   let questionPayload: unknown = question;
 
@@ -182,6 +227,7 @@ export async function submitAnswer(params: {
       explanation:    question.explanation ?? undefined,
       course_code:    question.course_code,
       topic:          question.topic,
+      question_type:  question.question_type,
     };
   } else if (/^[0-9a-fA-F]{24}$/.test(questionId)) {
     const aiQuestion = await AIQuestion.findOne({ _id: questionId, user_id: userId }).lean();
@@ -192,6 +238,8 @@ export async function submitAnswer(params: {
         explanation:    aiQuestion.explanation ?? undefined,
         course_code:    'AI',
         topic:          aiQuestion.topic,
+        question_type:  aiQuestion.question_type,
+        rubric:         aiQuestion.rubric ?? undefined,
       };
       questionPayload = aiQuestion;
     }
@@ -201,7 +249,34 @@ export async function submitAnswer(params: {
     throw new AppError(404, 'NOT_FOUND', 'Question not found');
   }
 
-  const isCorrect = chosenAnswer.trim().toUpperCase() === gradeSource.correct_answer.trim().toUpperCase();
+  // MCQ letters grade by exact match; anything the student WRITES is graded by the
+  // AI, because "raises cardiac output" and "increases CO" are the same answer and
+  // only one of them ever matched a string comparison (reformation Phase 2).
+  // `gradeAnswers` degrades to exact match on budget/provider failure, so this
+  // path can never fail an answer the student already gave.
+  //
+  // BUDGET: unlike the batch path, practice is per-answer, so a typed answer costs
+  // one credit to grade and — if it is wrong — a second to stream tutor feedback
+  // below. Ten wrong typed answers can therefore exhaust a 20/day budget in one
+  // session. Accepted as-is (2026-07-23): the degradation is graceful and the
+  // common path (mastery checks) batches to a single call. If students start
+  // hitting AI_LIMIT_REACHED here, the fix is to fold the verdict into the feedback
+  // stream so a wrong typed answer costs one credit rather than two.
+  const isCorrect = isFreeResponse(gradeSource.question_type)
+    ? (
+        await aiService.gradeAnswer({
+          item: {
+            question_text:  gradeSource.question_text,
+            correct_answer: gradeSource.correct_answer,
+            rubric:         gradeSource.rubric,
+            question_type:  gradeSource.question_type,
+            student_answer: chosenAnswer,
+          },
+          userId,
+          institutionId: session.institution_id,
+        })
+      ).is_correct
+    : exactMatchGrade(chosenAnswer, gradeSource.correct_answer);
 
   // Record answer
   const answer = await prisma.sessionAnswer.create({
@@ -211,8 +286,11 @@ export async function submitAnswer(params: {
       chosen_answer: chosenAnswer,
       is_correct:    isCorrect,
       time_taken_ms: timeTakenMs,
+      confidence:    params.confidence ?? null,
     },
   });
+
+  recordItemOutcomes([{ questionId, isCorrect }]);
 
   // In practice mode, automatically stream AI feedback for incorrect answers
   if (!isCorrect) {
@@ -257,6 +335,8 @@ export interface BatchAnswerInput {
   question_id:   string;
   chosen_answer: string;
   time_taken_ms: number;
+  /** Self-reported 1–5, captured before the verdict (reformation Phase 3). */
+  confidence?:   number;
 }
 
 export interface BatchAnswerResult {
@@ -328,21 +408,92 @@ export async function submitAnswers(params: {
   // bank questions live in PostgreSQL, AI-generated ones in MongoDB.
   const bankQuestions = await prisma.question.findMany({
     where:  { id: { in: questionIds } },
-    select: { id: true, correct_answer: true },
+    select: { id: true, correct_answer: true, question_text: true, question_type: true },
   });
-  const correctByQuestion = new Map(bankQuestions.map((q) => [q.id, q.correct_answer]));
+
+  interface GradeSource {
+    correct_answer: string;
+    question_text:  string;
+    question_type:  string;
+    rubric?:        string;
+  }
+
+  const sourceByQuestion = new Map<string, GradeSource>(
+    bankQuestions.map((q) => [
+      q.id,
+      {
+        correct_answer: q.correct_answer,
+        question_text:  q.question_text,
+        question_type:  q.question_type,
+      },
+    ]),
+  );
 
   const mongoIds = questionIds.filter(
-    (id) => !correctByQuestion.has(id) && /^[0-9a-fA-F]{24}$/.test(id),
+    (id) => !sourceByQuestion.has(id) && /^[0-9a-fA-F]{24}$/.test(id),
   );
   if (mongoIds.length > 0) {
     const aiQuestions = await AIQuestion.find(
       { _id: { $in: mongoIds }, user_id: userId },
-      { correct_answer: 1 },
+      { correct_answer: 1, question_text: 1, question_type: 1, rubric: 1 },
     ).lean();
     for (const q of aiQuestions) {
-      correctByQuestion.set((q._id as { toString(): string }).toString(), q.correct_answer);
+      sourceByQuestion.set((q._id as { toString(): string }).toString(), {
+        correct_answer: q.correct_answer,
+        question_text:  q.question_text,
+        question_type:  q.question_type,
+        rubric:         q.rubric ?? undefined,
+      });
     }
+  }
+
+  /**
+   * Free-response items in the batch are graded by the AI in ONE call for the whole
+   * set (reformation Phase 2). Batching matters: a per-item call would put a single
+   * silent paper at N credits against a 20/day budget shared with generation,
+   * planning and tutor feedback. MCQ items never reach the grader.
+   *
+   * The grader falls back to exact match internally when the budget is spent or the
+   * provider is down, so an exam or mastery check always submits.
+   *
+   * **EXAM MODE IS DELIBERATELY NOT RESTRICTED TO MCQ** (decided 2026-07-23). The
+   * Phase 2 handoff proposed keeping exams MCQ-only to protect the offline story;
+   * the guarantee that actually protects it is the fallback above — grading can
+   * degrade, but a submit can never be blocked or rate-limited. The residual cost
+   * is that a fully-offline exam shows the client's provisional exact-match verdict
+   * for typed answers until the batch syncs, at which point the server's verdict
+   * overwrites it. `completeSession` scores from the stored rows and flushes first,
+   * so the FINAL score is always the AI verdict. Do not "fix" this by excluding
+   * non-MCQ items from exams without revisiting that decision.
+   */
+  const toGrade: { questionId: string; item: AnswerToGrade }[] = [];
+  for (const item of deduped) {
+    const source = sourceByQuestion.get(item.question_id);
+    if (!source || existingByQuestion.has(item.question_id)) continue;
+    if (!isFreeResponse(source.question_type)) continue;
+    toGrade.push({
+      questionId: item.question_id,
+      item: {
+        question_text:  source.question_text,
+        correct_answer: source.correct_answer,
+        rubric:         source.rubric,
+        question_type:  source.question_type,
+        student_answer: item.chosen_answer,
+      },
+    });
+  }
+
+  const aiVerdicts = new Map<string, boolean>();
+  if (toGrade.length > 0) {
+    const grades = await aiService.gradeAnswers({
+      items:         toGrade.map((g) => g.item),
+      userId,
+      institutionId: session.institution_id,
+    });
+    toGrade.forEach((g, index) => {
+      const grade = grades[index];
+      if (grade) aiVerdicts.set(g.questionId, grade.is_correct);
+    });
   }
 
   const results: BatchAnswerResult[] = [];
@@ -352,13 +503,15 @@ export async function submitAnswers(params: {
     chosen_answer: string;
     is_correct:    boolean;
     time_taken_ms: number;
+    confidence:    number | null;
   }[] = [];
 
   for (const item of deduped) {
-    const correctAnswer = correctByQuestion.get(item.question_id);
-    if (correctAnswer === undefined) {
+    const source = sourceByQuestion.get(item.question_id);
+    if (source === undefined) {
       throw new AppError(404, 'NOT_FOUND', `Question not found: ${item.question_id}`);
     }
+    const correctAnswer = source.correct_answer;
 
     const previous = existingByQuestion.get(item.question_id);
     if (previous) {
@@ -371,9 +524,11 @@ export async function submitAnswers(params: {
       continue;
     }
 
-    // Same rule as `submitAnswer`, so a client grading offline agrees with us.
+    // MCQ uses the same rule as `submitAnswer`, so a client grading offline agrees
+    // with us. Free-response takes the AI verdict resolved above — the client's
+    // offline exact-match guess is overwritten when the batch lands.
     const isCorrect =
-      item.chosen_answer.trim().toUpperCase() === correctAnswer.trim().toUpperCase();
+      aiVerdicts.get(item.question_id) ?? exactMatchGrade(item.chosen_answer, correctAnswer);
 
     toCreate.push({
       session_id:    sessionId,
@@ -381,6 +536,7 @@ export async function submitAnswers(params: {
       chosen_answer: item.chosen_answer,
       is_correct:    isCorrect,
       time_taken_ms: item.time_taken_ms,
+      confidence:    item.confidence ?? null,
     });
 
     results.push({
@@ -393,10 +549,18 @@ export async function submitAnswers(params: {
 
   if (toCreate.length > 0) {
     await prisma.sessionAnswer.createMany({ data: toCreate });
+    recordItemOutcomes(
+      toCreate.map((a) => ({ questionId: a.question_id, isCorrect: a.is_correct })),
+    );
   }
 
   logger.info(
-    { sessionId, submitted: toCreate.length, skipped: deduped.length - toCreate.length },
+    {
+      sessionId,
+      submitted: toCreate.length,
+      skipped:   deduped.length - toCreate.length,
+      ai_graded: aiVerdicts.size,
+    },
     'Batch answers submitted',
   );
 

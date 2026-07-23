@@ -3,32 +3,48 @@ import prisma from '@config/database';
 import { emailQueue } from '@jobs/queues';
 import { notificationService } from '@services/notification.service';
 import { get as redisGet, set as redisSet } from '@lib/redis';
-import { CRON, REDIS_KEYS, TTL } from '@config/constants';
+import { CRON, REDIS_KEYS, TTL, WAT_OFFSET_MINUTES } from '@config/constants';
 import { env } from '@config/env';
 import logger from '@lib/logger';
+
+// ─── WAT time helpers ──────────────────────────────────────────────────────────
+// The cron process runs in UTC (Render), but study times and quiet hours are the
+// student's local WAT ("HH:MM"). Convert once, here, so every comparison is WAT.
+
+/** Minutes-since-midnight in WAT for `now`. */
+function watMinutesOfDay(now: Date): number {
+  return (now.getUTCHours() * 60 + now.getUTCMinutes() + WAT_OFFSET_MINUTES) % 1440;
+}
+
+/** Day of week (0=Sun) in WAT — a late-UTC evening can already be the next WAT day. */
+function watDayOfWeek(now: Date): number {
+  return new Date(now.getTime() + WAT_OFFSET_MINUTES * 60_000).getUTCDay();
+}
+
+/** Parse "HH:MM" → minutes since midnight; null when malformed. */
+function parseHHMM(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const [h, m] = value.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
 
 // ─── Quiet Hours Check ─────────────────────────────────────────────────────────
 
 function isInQuietHours(
-  quietStart: string | null | undefined,
-  quietEnd:   string | null | undefined,
-  now:        Date,
+  quietStart:       string | null | undefined,
+  quietEnd:         string | null | undefined,
+  nowWatMinutes:    number,
 ): boolean {
-  if (!quietStart || !quietEnd) return false;
-
-  const [startH = 0, startM = 0] = quietStart.split(':').map(Number);
-  const [endH = 0, endM = 0]   = quietEnd.split(':').map(Number);
-
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const startMinutes   = startH * 60 + startM;
-  const endMinutes     = endH * 60 + endM;
+  const startMinutes = parseHHMM(quietStart);
+  const endMinutes   = parseHHMM(quietEnd);
+  if (startMinutes === null || endMinutes === null) return false;
 
   if (startMinutes <= endMinutes) {
-    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-  } else {
-    // Spans midnight (e.g. 22:00 → 06:00)
-    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    return nowWatMinutes >= startMinutes && nowWatMinutes < endMinutes;
   }
+  // Spans midnight (e.g. 22:00 → 06:00)
+  return nowWatMinutes >= startMinutes || nowWatMinutes < endMinutes;
 }
 
 // ─── Reminder Frequency Check ─────────────────────────────────────────────────
@@ -57,7 +73,9 @@ async function runStudyReminderJob(): Promise<void> {
   logger.info('Study reminder cron started');
 
   const today = new Date();
-  const dayOfWeek = today.getDay();
+  const dayOfWeek = watDayOfWeek(today);
+  const nowWat = watMinutesOfDay(today);
+  const currentWatHour = Math.floor(nowWat / 60);
 
   const schedules = await prisma.studySchedule.findMany({
     where: {
@@ -77,11 +95,18 @@ async function runStudyReminderJob(): Promise<void> {
     const pref = user.notification_pref;
 
     try {
+      // Only fire during the schedule's own start HOUR — the cron runs hourly, so
+      // an 18:xx session is reminded on the 18:00 WAT pass and nowhere else. A
+      // malformed time falls back to the historical 6 PM WAT slot.
+      const startMinutes = parseHHMM(schedule.preferred_time_start);
+      const targetHour = startMinutes !== null ? Math.floor(startMinutes / 60) : 18;
+      if (currentWatHour !== targetHour) { skipped++; continue; }
+
       // Skip opted-out users
       if (pref?.opt_out_reminders) { skipped++; continue; }
 
       // Skip quiet hours
-      if (isInQuietHours(pref?.quiet_hours_start, pref?.quiet_hours_end, today)) {
+      if (isInQuietHours(pref?.quiet_hours_start, pref?.quiet_hours_end, nowWat)) {
         skipped++;
         continue;
       }

@@ -172,9 +172,19 @@ export interface IAIQuestion extends Document {
   user_id: string;
   institution_id: string;
   topic: string;
-  question_type: 'mcq' | 'short_answer' | 'fill_blank';
+  /**
+   * `numeric` is Phase-2 additive: a free-response item whose answer is a value,
+   * graded with unit/formatting tolerance rather than string equality. Everything
+   * that is not `mcq` is free-response and needs the AI grader.
+   */
+  question_type: 'mcq' | 'short_answer' | 'fill_blank' | 'numeric';
   question_text: string;
-  options?: Array<{ key: string; text: string }>;
+  /**
+   * `misconception` (reformation Phase 1) tags a DISTRACTOR with the specific
+   * error it represents, so choosing it diagnoses a real concept — not a Bloom
+   * level. Absent on the correct option and on legacy rows.
+   */
+  options?: Array<{ key: string; text: string; misconception?: string }>;
   correct_answer: string;
   explanation?: string;
   difficulty: 'easy' | 'medium' | 'hard';
@@ -188,6 +198,22 @@ export interface IAIQuestion extends Document {
   objective_id?: string;
   /** Bloom level this question targets — drives the per-level partial credit. */
   bloom_level?: string;
+  /** Source page in the student's material this was grounded on (reformation P1). */
+  source_page?: number;
+  /**
+   * What a correct free-response answer must demonstrate — the criteria the AI
+   * grader judges against (reformation Phase 2). Only set on non-MCQ items;
+   * `correct_answer` holds the model answer itself.
+   */
+  rubric?: string;
+  /**
+   * Empirical difficulty counters (reformation Phase 2). `difficulty` above is the
+   * LLM's SELF-LABEL; these are what actually happened. Incremented from the
+   * grading path, so `correct_count / seen_count` is a real p-value once
+   * `seen_count` is meaningful — see `utils/pool.ts`.
+   */
+  seen_count?: number;
+  correct_count?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -197,9 +223,9 @@ const AIQuestionSchema = new Schema<IAIQuestion>(
     user_id:        { type: String, required: true, index: true },
     institution_id: { type: String, required: true },
     topic:          { type: String, required: true },
-    question_type:  { type: String, enum: ['mcq', 'short_answer', 'fill_blank'], required: true },
+    question_type:  { type: String, enum: ['mcq', 'short_answer', 'fill_blank', 'numeric'], required: true },
     question_text:  { type: String, required: true },
-    options:        [{ key: String, text: String }],
+    options:        [{ key: String, text: String, misconception: String }],
     correct_answer: { type: String, required: true },
     explanation:    { type: String },
     difficulty:     { type: String, enum: ['easy', 'medium', 'hard'], required: true },
@@ -207,6 +233,10 @@ const AIQuestionSchema = new Schema<IAIQuestion>(
     flag_reason:    { type: String },
     objective_id:   { type: String, index: true },
     bloom_level:    { type: String },
+    source_page:    { type: Number },
+    rubric:         { type: String },
+    seen_count:     { type: Number, default: 0, min: 0 },
+    correct_count:  { type: Number, default: 0, min: 0 },
   },
   { timestamps: true },
 );
@@ -215,6 +245,39 @@ AIQuestionSchema.index({ user_id: 1, createdAt: -1 });
 AIQuestionSchema.index({ institution_id: 1, topic: 1 });
 
 export const AIQuestion = model<IAIQuestion>('AIQuestion', AIQuestionSchema);
+
+// ─── Resource Chunks (RAG grounding — reformation Phase 1) ──────────────────────
+
+export interface IResourceChunk extends Document {
+  _id: Types.ObjectId;
+  /** LearningResource.id (Postgres uuid) this chunk was extracted from. */
+  resource_id: string;
+  user_id: string;
+  /** Position in the document, for stable ordering + citation. */
+  ordinal: number;
+  text: string;
+  /** Best-effort source page, when the extractor can attribute one. */
+  page?: number;
+  /** Gemini text-embedding-004 vector (768-dim). Retrieval is brute-force cosine
+   *  over a single resource's chunks in Node — no vector DB at this scale. */
+  embedding: number[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const ResourceChunkSchema = new Schema<IResourceChunk>(
+  {
+    resource_id: { type: String, required: true, index: true },
+    user_id:     { type: String, required: true },
+    ordinal:     { type: Number, required: true },
+    text:        { type: String, required: true },
+    page:        { type: Number },
+    embedding:   { type: [Number], required: true },
+  },
+  { timestamps: true },
+);
+
+export const ResourceChunk = model<IResourceChunk>('ResourceChunk', ResourceChunkSchema);
 
 
 export interface IStudyPlanTask {
