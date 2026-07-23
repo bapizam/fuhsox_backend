@@ -22,7 +22,29 @@ export async function set(key: string, value: string, ttlSeconds?: number): Prom
  * Delete one or more keys from Redis.
  */
 export async function del(...keys: string[]): Promise<number> {
+  if (keys.length === 0) return 0;
   return redis.del(...keys);
+}
+
+/**
+ * Delete every key matching a glob pattern. Returns how many were removed.
+ *
+ * SCAN rather than KEYS: KEYS walks the entire keyspace in a single blocking call,
+ * stalling every other client for its duration — and this runs on account deletion,
+ * where the per-user keys it targets (`ai_daily:<id>:*`) are a handful of entries
+ * scattered through a keyspace shared with sessions, queues and rate limits.
+ */
+export async function delByPattern(pattern: string): Promise<number> {
+  let cursor = '0';
+  let deleted = 0;
+
+  do {
+    const [next, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+    cursor = next;
+    if (keys.length > 0) deleted += await redis.del(...keys);
+  } while (cursor !== '0');
+
+  return deleted;
 }
 
 /**
