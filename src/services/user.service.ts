@@ -4,6 +4,7 @@ import { Post, Comment, RoomMessage } from '../../mongo/schemas';
 import { notificationService } from './notification.service';
 import { gamificationService } from './gamification.service';
 import { uploadAvatar } from '@lib/s3';
+import { watDaysBetween } from '@utils/xp';
 import logger from '@lib/logger';
 
 // ─── Get My Profile ────────────────────────────────────────────────────────────
@@ -73,17 +74,15 @@ export async function getDashboard(userId: string) {
 
   if (!user) throw new AppError(404, 'NOT_FOUND', 'User not found');
 
-  // Same midnight semantics as utils/xp `evaluateStreak`: a streak is alive only
-  // if it was last extended today or yesterday — older than that it reads as 0
-  // (the stored count is stale until the next completed session resets it).
-  const todayMidnight = new Date(now);
-  todayMidnight.setHours(0, 0, 0, 0);
-  let daysSinceStreak = Number.POSITIVE_INFINITY;
-  if (user.last_streak_date) {
-    const lastMidnight = new Date(user.last_streak_date);
-    lastMidnight.setHours(0, 0, 0, 0);
-    daysSinceStreak = Math.round((todayMidnight.getTime() - lastMidnight.getTime()) / 86400000);
-  }
+  // Same WAT day semantics as utils/xp `evaluateStreak`, and now literally the
+  // same function: a streak is alive only if it was last extended today or
+  // yesterday — older than that it reads as 0 (the stored count is stale until
+  // the next completed session resets it). This used to re-implement the
+  // comparison with server-local `setHours`, so the dashboard and the streak that
+  // feeds it could disagree for an hour either side of midnight.
+  const daysSinceStreak = user.last_streak_date
+    ? watDaysBetween(user.last_streak_date, now)
+    : Number.POSITIVE_INFINITY;
 
   return {
     stats: {
