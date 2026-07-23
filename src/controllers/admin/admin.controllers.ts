@@ -10,6 +10,8 @@ import { eventService } from '@services/admin/event.service';
 import { newsService } from '@services/admin/news.service';
 import { studentService } from '@services/admin/student.service';
 import { questionAdminService } from '@services/admin/question.admin.service';
+import { aiContentAdminService } from '@services/admin/ai-content.service';
+import { kcService } from '@services/kc.service';
 import { questionService } from '@services/question.service';
 import { AppError } from '@typings/models';
 import { ok, fail } from '@utils/response';
@@ -469,3 +471,144 @@ export const adminUploadFile = asyncHandler(async (req: Request, res: Response) 
   }
 });
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AI CONTENT REVIEW (reformation Phase 4, Workstream B — ungated slice)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The flagged-item queue.
+ *
+ * Students have been able to flag a bad AI question since M2, and every one of
+ * those taps has written `quality_flag: 'flagged'` + `flag_reason` to Mongo. Until
+ * now **nothing read them** — a review queue with no screen. This is that screen's
+ * endpoint.
+ *
+ * Note what this is NOT: promoting AI items into the Postgres `Question` bank,
+ * institution-shared pools, or a review-before-use toggle. Those are the half of
+ * Workstream B gated on a real institution partner, and they are deliberately
+ * unbuilt rather than half-built.
+ */
+export const adminListFlaggedAIQuestions = asyncHandler(async (req: Request, res: Response) => {
+  const query = z.object({
+    page:  z.coerce.number().int().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    topic: z.string().max(255).optional(),
+  }).parse(req.query);
+
+  const result = await aiContentAdminService.listFlaggedAIQuestions({
+    institutionId: req.institutionId,
+    page:          query.page,
+    limit:         query.limit,
+    topic:         query.topic,
+  });
+  res.status(200).json(ok(result));
+});
+
+/** Queue depth — cheap enough for a nav badge. */
+export const adminCountFlaggedAIQuestions = asyncHandler(async (req: Request, res: Response) => {
+  const flagged = await aiContentAdminService.countFlaggedAIQuestions(req.institutionId);
+  res.status(200).json(ok({ flagged }));
+});
+
+/**
+ * Triage one flagged item. `dismiss` clears a wrong flag; `remove` deletes an item
+ * the admin agrees is broken, so a student is never served a question that has
+ * been judged bad. Pools regenerate lazily, so removal costs at most one future
+ * generation and never leaves a check empty.
+ */
+export const adminResolveFlaggedAIQuestion = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const body = z.object({
+    resolution: z.enum(['dismiss', 'remove']),
+  }).strict().parse(req.body);
+
+  const result = await aiContentAdminService.resolveFlaggedAIQuestion({
+    questionId:    id,
+    institutionId: req.institutionId,
+    resolution:    body.resolution,
+    adminId:       req.user.id,
+  });
+  res.status(200).json(ok(result));
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// KNOWLEDGE-COMPONENT CURATION (reformation Phase 4, Workstream A)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The institution's knowledge components.
+ *
+ * `curated_by: null` means an LLM proposed it and no human has looked — a real
+ * distinction, since an unreviewed graph is a hypothesis about a syllabus. The
+ * admin surface exists so that hypothesis can become a claim.
+ */
+export const adminListKnowledgeComponents = asyncHandler(async (req: Request, res: Response) => {
+  const query = z.object({ subject: z.string().max(255).optional() }).parse(req.query);
+  const components = await kcService.listKnowledgeComponents(req.institutionId, query.subject);
+  res.status(200).json(ok(components));
+});
+
+export const adminCreateKnowledgeComponent = asyncHandler(async (req: Request, res: Response) => {
+  const body = z.object({
+    subject:     z.string().min(1).max(255),
+    name:        z.string().min(1).max(160),
+    description: z.string().max(1000).optional(),
+  }).strict().parse(req.body);
+
+  const component = await kcService.createKnowledgeComponent({
+    institutionId: req.institutionId,
+    subject:       body.subject,
+    name:          body.name,
+    description:   body.description,
+    // A human made it, so it is curated by definition.
+    curatedBy:     req.user.id,
+  });
+  res.status(201).json(ok(component));
+});
+
+/** Mark a component reviewed, optionally correcting the model's wording. */
+export const adminCurateKnowledgeComponent = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const body = z.object({
+    name:        z.string().min(1).max(160).optional(),
+    description: z.string().max(1000).optional(),
+  }).strict().parse(req.body);
+
+  const component = await kcService.curateKnowledgeComponent({
+    kcId:          id,
+    institutionId: req.institutionId,
+    curatedBy:     req.user.id,
+    name:          body.name,
+    description:   body.description,
+  });
+  res.status(200).json(ok(component));
+});
+
+/**
+ * Assert a prerequisite. Rejects with 409 CONFLICT when the edge would close a
+ * cycle — a cyclic prerequisite graph hangs any naive upstream walk, and a curator
+ * who has just asserted something false about their own syllabus should be told
+ * rather than have it silently dropped.
+ */
+export const adminCreateKcEdge = asyncHandler(async (req: Request, res: Response) => {
+  const body = z.object({
+    from_kc_id: z.string().uuid(),
+    to_kc_id:   z.string().uuid(),
+    strength:   z.number().min(0).max(1).optional(),
+  }).strict().parse(req.body);
+
+  const edge = await kcService.createEdge({
+    institutionId: req.institutionId,
+    fromKcId:      body.from_kc_id,
+    toKcId:        body.to_kc_id,
+    strength:      body.strength,
+    curatedBy:     req.user.id,
+  });
+  res.status(201).json(ok(edge));
+});
+
+export const adminDeleteKcEdge = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  res.status(200).json(ok(await kcService.deleteEdge(id, req.institutionId)));
+});

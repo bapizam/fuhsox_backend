@@ -280,6 +280,60 @@ const ResourceChunkSchema = new Schema<IResourceChunk>(
 export const ResourceChunk = model<IResourceChunk>('ResourceChunk', ResourceChunkSchema);
 
 
+// ─── Micro-lessons (test-explain-retest — reformation Phase 3C) ────────────────
+
+export interface IMicroLessonSection {
+  /** The specific misconception this section addresses. */
+  misconception: string;
+  /** Why the student's belief is wrong, addressed to them. */
+  correction: string;
+  /** A concrete worked example drawn from the student's own material. */
+  worked_example?: string;
+  tip?: string;
+}
+
+export interface IMicroLesson extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  objective_id: string;
+  /**
+   * Order-independent key over the misconception set (`utils/misconception-quality`
+   * `misconceptionSetKey`). This is what makes a re-failed check reuse the lesson
+   * the student was already shown instead of paying to regenerate it.
+   */
+  misconception_key: string;
+  misconceptions: string[];
+  sections: IMicroLessonSection[];
+  /** Pages from the student's material the lesson was grounded in. */
+  source_pages: number[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MicroLessonSchema = new Schema<IMicroLesson>(
+  {
+    user_id:           { type: String, required: true, index: true },
+    objective_id:      { type: String, required: true, index: true },
+    misconception_key: { type: String, required: true },
+    misconceptions:    [String],
+    sections: [
+      {
+        misconception:  String,
+        correction:     String,
+        worked_example: String,
+        tip:            String,
+      },
+    ],
+    source_pages: [Number],
+  },
+  { timestamps: true },
+);
+
+// The cache lookup: this objective, this exact set of misconceptions, this user.
+MicroLessonSchema.index({ objective_id: 1, misconception_key: 1, user_id: 1 });
+
+export const MicroLesson = model<IMicroLesson>('MicroLesson', MicroLessonSchema);
+
 export interface IStudyPlanTask {
   subject: string;
   topic: string;

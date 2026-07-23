@@ -7,6 +7,7 @@ import { UPLOAD } from '@config/constants';
 import { ok } from '@utils/response';
 import { uploadPDF } from '@lib/s3';
 import { learningService } from '@services/learning.service';
+import { kcService } from '@services/kc.service';
 
 /**
  * Adaptive learning engine endpoints (M7 item 4).
@@ -186,6 +187,29 @@ export const getLearnerModel = asyncHandler(async (req: Request, res: Response) 
   res.status(200).json(ok(await learningService.getLearnerModel(req.user.id)));
 });
 
+// ─── Remediation (test-explain-retest — reformation Phase 3C) ─────────────────
+
+/**
+ * The micro-lesson for a failed check, plus the ids for an immediate retest.
+ *
+ * POST rather than GET because it can spend one AI credit on a cache miss.
+ *
+ * Always 200, never an error, when there is nothing to teach: the response
+ * carries `available: false` with a `reason`. A student who has just failed must
+ * not be shown an error screen in place of help — the client falls back to the
+ * plain outcome. `no_specific_misconceptions` is the guard firing, and it is a
+ * normal outcome for legacy pools, not a fault.
+ */
+export const getRemediation = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const result = await learningService.getRemediation({
+    objectiveId:   id,
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+  });
+  res.status(200).json(ok(result));
+});
+
 // ─── Exam outcomes (ground truth — reformation Phase 2) ───────────────────────
 
 const examOutcomeSchema = z.object({
@@ -226,4 +250,63 @@ export const listExamOutcomes = asyncHandler(async (req: Request, res: Response)
 export const deleteExamOutcome = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   res.status(200).json(ok(await learningService.deleteExamOutcome(id, req.user.id)));
+});
+
+/**
+ * How well predicted readiness has matched real grades across the institution
+ * (reformation Phase 4, Workstream C — read-only slice).
+ *
+ * Answers `{ sufficient: false, observations, minimum_sample }` until there are
+ * enough paired results to say anything, and the client is expected to render
+ * NOTHING in that case. Fitting a bias from a handful of grades would be noise
+ * dressed as rigour — the exact failure the reformation set out to remove.
+ *
+ * Never adjusts the readiness figure itself. This is context beside the estimate.
+ */
+export const getReadinessCalibration = asyncHandler(async (req: Request, res: Response) => {
+  res.status(200).json(ok(await learningService.getReadinessCalibration(req.institutionId)));
+});
+
+// ─── Knowledge components (reformation Phase 4, Workstream A) ─────────────────
+
+/**
+ * The prerequisite graph for a subject, annotated with this student's `p_known`.
+ * Zero AI calls — joins and BKT arithmetic, so it is affordable on an always-on
+ * screen against the 20/day budget.
+ */
+export const getKcGraph = asyncHandler(async (req: Request, res: Response) => {
+  const query = z.object({ subject: z.string().min(1).max(255).optional() }).parse(req.query);
+
+  const graph = await kcService.getGraphForUser({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    subject:       query.subject,
+  });
+  res.status(200).json(ok(graph));
+});
+
+const mapSubjectSchema = z.object({ subject: z.string().min(1).max(255) }).strict();
+
+/**
+ * Map this student's objectives for a subject onto knowledge components and
+ * propose the prerequisite edges between them.
+ *
+ * POST because it spends ONE AI credit for the whole subject. Idempotent in the
+ * way that matters: components upsert on (institution, subject, name), so running
+ * it again attaches newly-added objectives to the existing graph instead of
+ * duplicating it.
+ *
+ * Always 200. Every failure — no objectives, budget gone, a malformed model
+ * response — returns `available: false` with a reason, because the graph is an
+ * enhancement to a learner model that worked without it and must never break a
+ * study session.
+ */
+export const mapObjectivesToKcs = asyncHandler(async (req: Request, res: Response) => {
+  const body = mapSubjectSchema.parse(req.body);
+  const result = await kcService.proposeGraphForSubject({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    subject:       body.subject,
+  });
+  res.status(200).json(ok(result));
 });

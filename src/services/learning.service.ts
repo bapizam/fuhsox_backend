@@ -16,7 +16,7 @@
  *    analytics are pure arithmetic in `utils/mastery.ts` and cost nothing.
  */
 import prisma from '@config/database';
-import { AIQuestion, ResourceChunk } from '../../mongo/schemas';
+import { AIQuestion, MicroLesson, ResourceChunk } from '../../mongo/schemas';
 import { AppError } from '@typings/models';
 import { MASTERY_CHECK, REDIS_KEYS } from '@config/constants';
 import { getCount, getEndOfDayTTL, getTodayWAT, incrWithExpiry } from '@lib/redis';
@@ -40,6 +40,13 @@ import {
   type ObjectiveSnapshot,
 } from '@utils/mastery';
 import { selectForCheck, unseenShortfall, type PoolItem } from '@utils/pool';
+import {
+  isLegacyBloomConcept,
+  misconceptionSetKey,
+  usableMisconceptions,
+} from '@utils/misconception-quality';
+import { readinessCalibration, type ReadinessCalibration } from '@utils/calibration';
+import { kcService, type DiagnosedGap } from './kc.service';
 import logger from '@lib/logger';
 
 // ─── Resources ────────────────────────────────────────────────────────────────
@@ -938,6 +945,238 @@ export async function getLearnerModel(userId: string) {
   };
 }
 
+// ─── Test-explain-retest (reformation Phase 3, Workstream C) ──────────────────
+
+export interface RemediationResult {
+  objective_id: string;
+  /** False when there is nothing safe or useful to teach — see `reason`. */
+  available:    boolean;
+  /**
+   * Why no lesson: `no_attempt` (never assessed), `passed` (nothing to fix),
+   * `no_specific_misconceptions` (the recorded concepts failed the quality
+   * guard — legacy Bloom levels or generic boilerplate), `budget_exhausted`,
+   * or `generation_failed`.
+   */
+  reason?:      string;
+  misconceptions: string[];
+  sections:     { misconception: string; correction: string; worked_example?: string; tip?: string }[];
+  /**
+   * Question ids for the immediate retest — the "retest" half of
+   * test-explain-retest. Drawn from the cached pool, so it costs no AI.
+   */
+  retest_question_ids: string[];
+  /** True when the lesson came from cache — no budget was spent on this request. */
+  cached:       boolean;
+  /**
+   * Prerequisite knowledge components that are themselves shaky (reformation
+   * Phase 4). Costs ZERO AI — it is a graph walk plus BKT arithmetic.
+   *
+   * **Populated independently of `available`, and that is the point.** When the
+   * micro-lesson is blocked because the recorded misconceptions were boilerplate,
+   * or when the AI budget is gone, this is the one thing the engine can still say
+   * usefully — and unlike a generated lesson it is derived entirely from the
+   * student's own attempt history, so it is safe to show in exactly the cases
+   * where generation is not.
+   *
+   * Empty whenever the engine cannot speak honestly: the objective has no KC, the
+   * graph has no prerequisites for it, or no prerequisite has enough evidence
+   * behind it to accuse.
+   */
+  prerequisite_gaps: DiagnosedGap[];
+}
+
+/**
+ * Teach what the student actually got wrong, then immediately re-test it.
+ *
+ * The critique's sharpest point (#4) was that the engine is "test-heavy and
+ * teach-light": it tells you *that* you failed, not *how* to fix it, and its idea
+ * of remediation is more questions. This closes that loop — but only when it can
+ * do so honestly.
+ *
+ * **The quality gate is enforced here, in code, on every call.** Phase 1's
+ * `weak_concepts` can contain legacy Bloom levels ("apply") or generic model
+ * boilerplate ("misunderstands the concept"), and generating a confident clinical
+ * worked example from either would be worse than teaching nothing. Anything that
+ * fails `utils/misconception-quality` never reaches the generator; the endpoint
+ * returns `available: false` and the client falls back to the existing outcome
+ * screen. That check runs every time rather than once at review, because a bad
+ * pool can be generated any day.
+ */
+export async function getRemediation(params: {
+  objectiveId:   string;
+  userId:        string;
+  institutionId: string;
+}): Promise<RemediationResult> {
+  const objective = await ownedObjective(params.objectiveId, params.userId);
+
+  // Filled in below once we know the check was failed. `empty` closes over it so
+  // every early return carries the prerequisite diagnosis — the blocked-lesson
+  // paths are exactly the ones where it is the only help left to give.
+  let prerequisiteGaps: DiagnosedGap[] = [];
+
+  const empty = (reason: string): RemediationResult => ({
+    objective_id: objective.id,
+    available:    false,
+    reason,
+    misconceptions: [],
+    sections:     [],
+    retest_question_ids: [],
+    cached:       false,
+    prerequisite_gaps: prerequisiteGaps,
+  });
+
+  const lastAttempt = await prisma.masteryAttempt.findFirst({
+    where:   { objective_id: objective.id, user_id: params.userId },
+    orderBy: { created_at: 'desc' },
+  });
+  if (!lastAttempt) return empty('no_attempt');
+  if (lastAttempt.passed) return empty('passed');
+
+  // The upstream walk (reformation Phase 4). Never throws and never blocks the
+  // lesson: a missing or unmapped graph just yields no gaps, which is the same
+  // behaviour as before this existed.
+  prerequisiteGaps = await kcService
+    .diagnoseObjective({
+      objectiveId:   objective.id,
+      userId:        params.userId,
+      institutionId: params.institutionId,
+    })
+    .catch((err: unknown) => {
+      logger.warn({ err, objectiveId: objective.id }, 'Prerequisite diagnosis failed');
+      return [];
+    });
+
+  // THE GATE. Legacy Bloom levels are stripped first (they are not misconceptions
+  // and can't be taught from), then the quality guard removes boilerplate.
+  const candidates = lastAttempt.weak_concepts.filter((c) => !isLegacyBloomConcept(c));
+  const { usable, rejected } = usableMisconceptions(candidates);
+
+  if (usable.length === 0) {
+    logger.info(
+      { objectiveId: objective.id, rejected: rejected.map((r) => r.reason) },
+      'Remediation blocked — no misconception specific enough to teach from',
+    );
+    return empty('no_specific_misconceptions');
+  }
+
+  const key = misconceptionSetKey(usable);
+
+  // Cache first: a student who fails the same way twice sees the same lesson and
+  // is charged nothing for it.
+  const cached = await MicroLesson.findOne({
+    objective_id: objective.id,
+    user_id:      params.userId,
+    misconception_key: key,
+  }).lean();
+
+  const retestIds = await drawRetestQuestions(objective.id, params.userId, usable);
+
+  if (cached) {
+    return {
+      objective_id: objective.id,
+      available:    true,
+      misconceptions: cached.misconceptions,
+      sections:     cached.sections.map((s) => ({
+        misconception:  s.misconception,
+        correction:     s.correction,
+        worked_example: s.worked_example ?? undefined,
+        tip:            s.tip ?? undefined,
+      })),
+      retest_question_ids: retestIds,
+      cached:       true,
+      prerequisite_gaps: prerequisiteGaps,
+    };
+  }
+
+  // Ground the lesson in the student's own material, exactly as generation is.
+  const grounding = objective.resource_id
+    ? await retrieveChunks(objective.resource_id, `${objective.statement} ${usable.join(' ')}`, 6)
+        .catch(() => [])
+    : [];
+
+  let sections: { misconception: string; correction: string; worked_example?: string; tip?: string }[];
+  try {
+    sections = await aiService.generateMicroLesson({
+      objective:      objective.statement,
+      subject:        objective.subject,
+      misconceptions: usable,
+      grounding:      grounding.map((g) => ({ text: g.text, page: g.page })),
+      userId:         params.userId,
+      institutionId:  params.institutionId,
+    });
+  } catch (err) {
+    // A student who has just failed must never be shown "no AI credits left"
+    // in place of help — the client falls back to the plain outcome screen.
+    const reason = err instanceof AppError && err.code === 'AI_LIMIT_REACHED'
+      ? 'budget_exhausted'
+      : 'generation_failed';
+    logger.warn({ err, objectiveId: objective.id }, 'Micro-lesson generation failed');
+    return { ...empty(reason), retest_question_ids: retestIds };
+  }
+
+  if (sections.length === 0) return { ...empty('generation_failed'), retest_question_ids: retestIds };
+
+  await MicroLesson.create({
+    user_id:           params.userId,
+    objective_id:      objective.id,
+    misconception_key: key,
+    misconceptions:    usable,
+    sections,
+    source_pages:      [...new Set(grounding.flatMap((g) => (typeof g.page === 'number' ? [g.page] : [])))],
+  });
+
+  return {
+    objective_id: objective.id,
+    available:    true,
+    misconceptions: usable,
+    sections,
+    retest_question_ids: retestIds,
+    cached:       false,
+    prerequisite_gaps: prerequisiteGaps,
+  };
+}
+
+/**
+ * Pick a few pool questions that probe the misconceptions just demonstrated.
+ *
+ * Costs NO AI: it searches the objective's existing cached pool for items whose
+ * distractors carry one of these misconceptions — the Phase 1 tagging makes this
+ * a lookup rather than a generation. Prefers items the student hasn't seen; falls
+ * back to any matching item, then to any unseen item at all, so the retest is
+ * never empty when a pool exists.
+ */
+async function drawRetestQuestions(
+  objectiveId: string,
+  userId: string,
+  misconceptions: string[],
+): Promise<string[]> {
+  const RETEST_COUNT = 3;
+
+  const pool = await AIQuestion.find(
+    { objective_id: objectiveId, user_id: userId },
+    { options: 1 },
+  ).lean();
+  if (pool.length === 0) return [];
+
+  const wanted = new Set(misconceptions.map((m) => m.trim().toLowerCase()));
+  const seenIds = await seenQuestionIds(objectiveId, userId);
+
+  const targeted: string[] = [];
+  const targetedSeen: string[] = [];
+  const other: string[] = [];
+
+  for (const q of pool) {
+    const id = (q._id as { toString(): string }).toString();
+    const hits = (q.options ?? []).some(
+      (o) => o.misconception && wanted.has(o.misconception.trim().toLowerCase()),
+    );
+    if (hits) (seenIds.has(id) ? targetedSeen : targeted).push(id);
+    else if (!seenIds.has(id)) other.push(id);
+  }
+
+  return [...targeted, ...targetedSeen, ...other].slice(0, RETEST_COUNT);
+}
+
 // ─── Exam outcomes (ground truth — reformation Phase 2) ───────────────────────
 
 /** Optional free-text field → a stored null, so "" never becomes a value. */
@@ -1003,6 +1242,38 @@ export async function deleteExamOutcome(outcomeId: string, userId: string) {
   return { deleted: true };
 }
 
+/**
+ * How well predicted readiness has actually matched reported grades (reformation
+ * Phase 4, Workstream C — the ungated read-only slice).
+ *
+ * **Institution-scoped, not per-student, and that is forced by the arithmetic.**
+ * A calibration figure needs ~30 paired observations; no individual student will
+ * ever sit 30 exams inside the product. The cohort is the only sample that can
+ * reach a meaningful n, and the bias it measures is a property of the MODEL rather
+ * than of any one learner, so pooling is also the correct thing statistically.
+ *
+ * Returns `sufficient: false` with the running count until the threshold is met —
+ * see `utils/calibration.ts` for why the refusal to fit early is the feature and
+ * not a limitation. Nothing here adjusts `exam_readiness`; the number a student
+ * sees is untouched, and this is offered beside it as context.
+ *
+ * Zero AI calls.
+ */
+export async function getReadinessCalibration(institutionId: string): Promise<ReadinessCalibration> {
+  const outcomes = await prisma.examOutcome.findMany({
+    where:  { institution_id: institutionId, predicted_readiness: { not: null } },
+    select: { predicted_readiness: true, score_percent: true },
+  });
+
+  return readinessCalibration(
+    outcomes.flatMap((outcome) =>
+      outcome.predicted_readiness === null
+        ? []
+        : [{ predicted: outcome.predicted_readiness, actual: outcome.score_percent }],
+    ),
+  );
+}
+
 export const learningService = {
   createResource,
   listResources,
@@ -1021,4 +1292,6 @@ export const learningService = {
   recordExamOutcome,
   listExamOutcomes,
   deleteExamOutcome,
+  getReadinessCalibration,
+  getRemediation,
 };

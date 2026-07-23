@@ -742,18 +742,97 @@ model LearningObjective {
   fsrs_state      Int    @default(0)
   fsrs_last_review DateTime?
 
+  /// The knowledge component this objective exercises (reformation Phase 4).
+  ///
+  /// Nullable, and every read path must behave EXACTLY as it did before when this
+  /// is null — that is the whole compatibility story, the same one the FSRS
+  /// columns above tell. An unmapped objective simply has no prerequisite
+  /// diagnosis; it never fails or degrades.
+  ///
+  /// Deliberately on the OBJECTIVE rather than on the item. Items live in Mongo
+  /// and objectives in Postgres, so an item→KC map would be a cross-store
+  /// relation bought for a grain nothing can use yet. Item→KC is a later
+  /// refinement, descoped on purpose rather than silently.
+  kc_id String?
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  user         User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  resource     LearningResource? @relation(fields: [resource_id], references: [id], onDelete: SetNull)
-  node         SyllabusNode?     @relation(fields: [node_id], references: [id], onDelete: SetNull)
+  user         User                @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  resource     LearningResource?   @relation(fields: [resource_id], references: [id], onDelete: SetNull)
+  node         SyllabusNode?       @relation(fields: [node_id], references: [id], onDelete: SetNull)
+  kc           KnowledgeComponent? @relation(fields: [kc_id], references: [id], onDelete: SetNull)
   attempts_log MasteryAttempt[]
 
   @@index([user_id, state])
   @@index([user_id, next_review_at])
   @@index([node_id])
+  @@index([kc_id])
   @@map("learning_objectives")
+}
+
+/// A single unit of knowledge that objectives can depend on each other THROUGH
+/// (reformation Phase 4).
+///
+/// Before this, the learner model was a bag of independent per-objective EWMAs.
+/// It could say "you failed Cardiac Output" and nothing more, because no objective
+/// had any relation to any other — so it could never say *why*. A KC is the shared
+/// node two objectives can both point at, and `KCEdge` is the "you need this
+/// first" between two KCs. Together they are what lets a failure become a
+/// direction instead of a dead end.
+///
+/// Institution-scoped rather than per-user: the prerequisite structure of a
+/// subject is a property of the subject, not of the student studying it. Only
+/// `p_known` is personal, and that is derived per user at read time.
+model KnowledgeComponent {
+  id             String  @id @default(uuid())
+  institution_id String
+  subject        String
+  /// "Membrane potentials"
+  name           String
+  description    String?
+  /// Who vouched for it. NULL = LLM-proposed and not yet reviewed by a human,
+  /// which is a real distinction: an unreviewed graph is a hypothesis about a
+  /// syllabus, and the UI should never present it as more than that.
+  curated_by     String?
+
+  created_at DateTime @default(now())
+
+  outgoing   KCEdge[]            @relation("KCEdgeFrom")
+  incoming   KCEdge[]            @relation("KCEdgeTo")
+  objectives LearningObjective[]
+
+  /// One KC per name per subject. Without this, every generation pass would mint
+  /// a fresh "Membrane potentials" and the graph would never actually connect.
+  @@unique([institution_id, subject, name])
+  @@index([institution_id, subject])
+  @@map("knowledge_components")
+}
+
+/// A prerequisite dependency between two knowledge components.
+///
+/// ⚠ The graph MUST stay acyclic. A cycle makes any naive upstream walk hang, so
+/// acyclicity is enforced on insert (`wouldCreateCycle`) AND the traversal is
+/// depth-bounded at read time — belt and braces, because this is exactly the kind
+/// of bug that is invisible in testing and catastrophic in production.
+model KCEdge {
+  id String @id @default(uuid())
+  /// Prerequisite direction: `from` must be understood BEFORE `to`.
+  from_kc_id String
+  to_kc_id   String
+  /// 0..1 — how strongly the proposer believes the dependency holds. Used to rank
+  /// which gap to name first, never to gate whether a gap is shown.
+  strength   Float   @default(0.5)
+  curated_by String?
+
+  created_at DateTime @default(now())
+
+  from_kc KnowledgeComponent @relation("KCEdgeFrom", fields: [from_kc_id], references: [id], onDelete: Cascade)
+  to_kc   KnowledgeComponent @relation("KCEdgeTo", fields: [to_kc_id], references: [id], onDelete: Cascade)
+
+  @@unique([from_kc_id, to_kc_id])
+  @@index([to_kc_id])
+  @@map("kc_edges")
 }
 
 /// One assessment of one objective. Append-only: the audit trail behind a claim

@@ -40,6 +40,24 @@ router.post('/questions/upload/csv', admin.csvUpload.single('file'),     admin.a
 router.get('/questions/jobs/pdf',            admin.adminListPDFJobs);
 router.get('/questions/jobs/pdf/:id',        admin.adminGetPDFJob);
 
+// ── AI Content Review (reformation Phase 4, Workstream B — ungated slice) ─────
+// Students have flagged bad AI questions since M2 and nothing has ever read those
+// flags. This is that queue. Deliberately NOT shared pools or promotion into the
+// Postgres bank — that half of Workstream B is gated on a real institution partner.
+router.get('/ai-questions/flagged',        admin.adminListFlaggedAIQuestions);
+router.get('/ai-questions/flagged/count',  admin.adminCountFlaggedAIQuestions);
+router.patch('/ai-questions/:id/resolve',  admin.adminResolveFlaggedAIQuestion);
+
+// ── Knowledge Components (reformation Phase 4, Workstream A) ──────────────────
+// `curated_by: null` = LLM-proposed and unreviewed. These endpoints are how that
+// hypothesis about a syllabus becomes a claim a person stands behind.
+router.get('/kc',                admin.adminListKnowledgeComponents);
+router.post('/kc',               admin.adminCreateKnowledgeComponent);
+router.patch('/kc/:id/curate',   admin.adminCurateKnowledgeComponent);
+// 409 CONFLICT when the edge would close a cycle — see utils/kc-graph.ts.
+router.post('/kc/edges',         admin.adminCreateKcEdge);
+router.delete('/kc/edges/:id',   admin.adminDeleteKcEdge);
+
 // ── Event Management ──────────────────────────────────────────────────────────
 router.get('/events',              admin.adminListEvents);
 router.post('/events',             admin.adminCreateEvent);

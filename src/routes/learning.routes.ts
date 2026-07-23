@@ -15,9 +15,13 @@ import {
   startTopicMasteryCheck,
   completeMasteryCheck,
   getLearnerModel,
+  getRemediation,
   recordExamOutcome,
   listExamOutcomes,
   deleteExamOutcome,
+  getReadinessCalibration,
+  getKcGraph,
+  mapObjectivesToKcs,
 } from '@controllers/learning.controller';
 
 const router = Router();
@@ -65,6 +69,12 @@ router.post('/topic-check', startTopicMasteryCheck);
 // POST /api/v1/learning/objectives/:id/mastery-check/complete — score + advance.
 router.post('/objectives/:id/mastery-check/complete', completeMasteryCheck);
 
+// POST /api/v1/learning/objectives/:id/remediation — teach what was missed, then
+//      retest it. ONE AI call on a cache miss, zero on a repeat failure. Returns
+//      200 with `available:false` when the recorded misconceptions aren't specific
+//      enough to teach from safely — that guard is deliberate, not an error.
+router.post('/objectives/:id/remediation', getRemediation);
+
 // ─── Exam outcomes ────────────────────────────────────────────────────────────
 // The only ground truth in the system: everything else is AI-generated questions
 // scored against AI-generated answers. Collection only for now — the model that
@@ -75,5 +85,24 @@ router.get('/exam-outcomes', listExamOutcomes);
 router.post('/exam-outcomes', recordExamOutcome);
 // DELETE /api/v1/learning/exam-outcomes/:id  — a mistyped grade must be removable
 router.delete('/exam-outcomes/:id', deleteExamOutcome);
+
+// GET /api/v1/learning/readiness-calibration — how the readiness ESTIMATE has
+//     actually compared to reported grades, institution-wide (reformation Phase 4,
+//     Workstream C read-only slice). Returns `sufficient: false` with a running
+//     count until there are 30+ paired observations, and the client shows nothing
+//     in that case. Never adjusts readiness — context beside it, never a silent
+//     correction. ZERO AI calls.
+router.get('/readiness-calibration', getReadinessCalibration);
+
+// ─── Knowledge components (reformation Phase 4, Workstream A) ─────────────────
+// GET  /api/v1/learning/kc/graph?subject= — the prerequisite graph plus this
+//      student's p_known per component. ZERO AI calls.
+router.get('/kc/graph', getKcGraph);
+// POST /api/v1/learning/kc/map — map a subject's objectives onto components and
+//      propose the edges between them. ONE AI call for the WHOLE subject, and
+//      idempotent: re-running attaches new objectives to the existing graph rather
+//      than duplicating it. Always 200 — `available:false` on any failure, because
+//      the graph is an enhancement and must never break a study session.
+router.post('/kc/map', mapObjectivesToKcs);
 
 export default router;

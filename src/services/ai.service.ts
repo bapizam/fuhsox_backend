@@ -1129,6 +1129,124 @@ Return ONLY JSON: { "grades": [{ "index": 0, "is_correct": true, "score": 1, "fe
   }
 }
 
+// ─── Micro-lessons (test-explain-retest — reformation Phase 3C) ────────────────
+
+const MICRO_LESSON_SYSTEM_PROMPT = `You are a patient, expert tutor for Nigerian university health science students.
+A student has just failed an assessment, and you know EXACTLY which misconception each mistake came from.
+Teach to that misconception specifically — never give a general summary of the topic.
+For each misconception: state plainly why that belief is wrong, give the correct reasoning, then a SHORT concrete worked example.
+Be warm and direct. Never condescend, never pad. A student who just failed is already discouraged.
+SAFETY: you are teaching clinical material. If the provided passages do not support a claim, leave it out entirely rather than guessing.
+CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
+JSON format strictly: { "sections": [{ "misconception": string, "correction": string, "worked_example": string, "tip": string }] }`;
+
+export interface MicroLessonSection {
+  misconception:  string;
+  correction:     string;
+  worked_example?: string;
+  tip?:           string;
+}
+
+/**
+ * Generate a targeted micro-lesson for the misconceptions a student actually
+ * demonstrated (reformation Phase 3, Workstream C — critique #4).
+ *
+ * This is the first thing in the whole engine that TEACHES rather than measures.
+ * Until now a failed check produced a Bloom breakdown, a list of misconceptions
+ * and the advice "go revise" — it told you *that* you failed, never *how* to fix
+ * it, and the revision content was more AI questions.
+ *
+ * Two properties matter more than the prose quality:
+ *
+ * 1. **It is grounded.** The worked examples are built from the student's own
+ *    retrieved passages (Phase 1), so the teaching matches their curriculum,
+ *    units and drug names rather than the model's generic world knowledge.
+ * 2. **It is only ever called with VETTED misconceptions.** The caller filters
+ *    through `utils/misconception-quality` first. Generating a confident lesson
+ *    from "misunderstands the concept" would be worse than teaching nothing, and
+ *    in a clinical context actively unsafe.
+ *
+ * Throws `AI_LIMIT_REACHED` on an exhausted budget — the caller degrades to the
+ * plain outcome screen rather than showing an error.
+ */
+export async function generateMicroLesson(params: {
+  objective:      string;
+  subject:        string;
+  /** Pre-vetted. Never pass raw `weak_concepts` here. */
+  misconceptions: string[];
+  grounding?:     { text: string; page?: number }[];
+  userId:         string;
+  institutionId:  string;
+}): Promise<MicroLessonSection[]> {
+  if (params.misconceptions.length === 0) return [];
+
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const grounded = params.grounding ?? [];
+  const grounding = groundingBlock(grounded);
+
+  const list = params.misconceptions.map((m, i) => `${i + 1}. ${m}`).join('\n');
+
+  const response = await callAI({
+    system:   MICRO_LESSON_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `A student is working on this learning objective:
+"${params.objective}" (subject: ${params.subject})
+
+They just failed a mastery check. These are the SPECIFIC misconceptions their wrong
+answers revealed:
+${list}
+
+Write one section per misconception, in the same order. Address the student directly
+as "you". Keep each section under 120 words — they will read this immediately after a
+disappointing result, not study it.${grounding}
+${grounded.length ? 'Build every worked example from the passages above, using their exact terminology and units.' : ''}
+Return ONLY JSON:
+{ "sections": [{ "misconception": "...", "correction": "...", "worked_example": "...", "tip": "..." }] }`,
+      },
+    ],
+    max_tokens: 3072,
+  });
+
+  const parsed = parseJSONResponse<{ sections?: Record<string, unknown>[] }>(
+    response.text,
+    'micro-lesson',
+  );
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'quiz_feedback',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  const sections = (parsed.sections ?? []).flatMap((raw) => {
+    const misconception = textField(raw.misconception);
+    const correction = textField(raw.correction);
+    // A section with no correction teaches nothing — drop it rather than render
+    // an empty card.
+    if (!correction) return [];
+    return [{
+      misconception: misconception || 'This came up in your answers',
+      correction,
+      worked_example: textField(raw.worked_example) || undefined,
+      tip:            textField(raw.tip) || undefined,
+    }];
+  });
+
+  logger.info(
+    { userId: params.userId, requested: params.misconceptions.length, produced: sections.length },
+    'Micro-lesson generated',
+  );
+
+  return sections;
+}
+
 /** Single-item convenience wrapper over `gradeAnswers`. One AI call. */
 export async function gradeAnswer(params: {
   item:          AnswerToGrade;
@@ -1141,6 +1259,149 @@ export async function gradeAnswer(params: {
     institutionId: params.institutionId,
   });
   return grade;
+}
+
+// ─── Knowledge-component graph (reformation Phase 4, Workstream A) ─────────────
+
+const KC_GRAPH_SYSTEM_PROMPT = `You are a curriculum architect who maps the dependency structure of a syllabus.
+You group learning objectives under the underlying CONCEPT each one exercises, and you state which
+concepts must be understood before which others.
+A prerequisite is a hard dependency: if a student cannot possibly reason about B without already
+holding A, then A is a prerequisite of B. Two topics that merely appear in the same week are NOT.
+The dependency graph must be ACYCLIC — never state both that A precedes B and that B precedes A.
+You return ONLY valid JSON.`;
+
+export interface ProposedKnowledgeComponent {
+  name:          string;
+  description?:  string;
+  /** Objective ids from the request that exercise this component. */
+  objective_ids: string[];
+}
+
+export interface ProposedKcEdge {
+  /** KC name that must come FIRST. */
+  from:     string;
+  to:       string;
+  strength: number;
+}
+
+/**
+ * Propose the knowledge components behind a set of objectives, plus the
+ * prerequisite edges between them.
+ *
+ * **ONE call for a whole subject.** The alternative — one call per objective —
+ * would burn a student's entire 20/day budget mapping a single textbook, and it
+ * would also produce a worse graph: prerequisite structure is a statement about how
+ * objectives relate to EACH OTHER, so the model has to see them together to say
+ * anything true about it.
+ *
+ * Names are normalised to a canonical lower-cased key by the caller, which is what
+ * lets a second run on newly-added objectives attach to the existing graph instead
+ * of minting parallel nodes.
+ *
+ * Everything is filtered on the way out: an objective id the model invented, an
+ * edge naming a component it never proposed, a strength outside 0..1. The model is
+ * an untrusted source proposing writes to a shared institution-level graph, and
+ * `kc.service` additionally refuses any edge that would close a cycle.
+ */
+export async function proposeKnowledgeComponents(params: {
+  subject:       string;
+  objectives:    { id: string; statement: string }[];
+  userId:        string;
+  institutionId: string;
+}): Promise<{ components: ProposedKnowledgeComponent[]; edges: ProposedKcEdge[] }> {
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const list = params.objectives
+    .map((o) => `- id: ${o.id}\n  objective: ${o.statement}`)
+    .join('\n');
+
+  const response = await callAI({
+    system:   KC_GRAPH_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `Subject: ${params.subject}
+
+Here are the learning objectives a student is working through:
+${list}
+
+1. Group them under the underlying knowledge components they exercise. Name each component as a
+   noun phrase a lecturer would recognise ("Membrane potentials", "Cardiac output"), NOT as a
+   restatement of one objective. Aim for far fewer components than objectives.
+2. State the prerequisite edges between those components, using the component NAMES exactly as you
+   wrote them. Only include a dependency you would defend to the lecturer. Give each a strength
+   from 0 to 1 for how certain the dependency is.
+
+Return ONLY JSON:
+{
+  "components": [{ "name": "...", "description": "...", "objective_ids": ["..."] }],
+  "edges": [{ "from": "prerequisite component name", "to": "dependent component name", "strength": 0.8 }]
+}`,
+      },
+    ],
+    max_tokens: 3072,
+  });
+
+  const parsed = parseJSONResponse<{
+    components?: { name?: unknown; description?: unknown; objective_ids?: unknown }[];
+    edges?:      { from?: unknown; to?: unknown; strength?: unknown }[];
+  }>(response.text, 'knowledge components');
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'study_plan',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  const validIds = new Set(params.objectives.map((o) => o.id));
+
+  const components: ProposedKnowledgeComponent[] = (parsed.components ?? [])
+    .flatMap((component) => {
+      const name = typeof component.name === 'string' ? component.name.trim() : '';
+      if (name.length === 0 || name.length > 160) return [];
+
+      const objectiveIds = Array.isArray(component.objective_ids)
+        ? component.objective_ids.filter((id): id is string => typeof id === 'string' && validIds.has(id))
+        : [];
+
+      const description =
+        typeof component.description === 'string' && component.description.trim().length > 0
+          ? component.description.trim()
+          : undefined;
+
+      return [{ name, description, objective_ids: objectiveIds }];
+    })
+    // The model occasionally emits the same component twice under different
+    // casing; the DB unique constraint would collapse them anyway, but doing it
+    // here keeps `components_created` honest.
+    .filter((component, index, all) =>
+      all.findIndex((c) => c.name.toLowerCase() === component.name.toLowerCase()) === index);
+
+  const names = new Set(components.map((c) => c.name.toLowerCase()));
+
+  const edges: ProposedKcEdge[] = (parsed.edges ?? []).flatMap((edge) => {
+    const from = typeof edge.from === 'string' ? edge.from.trim() : '';
+    const to = typeof edge.to === 'string' ? edge.to.trim() : '';
+    // An edge naming a component that was never proposed cannot be resolved to an
+    // id, so it is dropped rather than silently creating a dangling node.
+    if (!names.has(from.toLowerCase()) || !names.has(to.toLowerCase())) return [];
+    if (from.toLowerCase() === to.toLowerCase()) return [];
+
+    const raw = typeof edge.strength === 'number' && Number.isFinite(edge.strength) ? edge.strength : 0.5;
+    return [{ from, to, strength: Math.min(1, Math.max(0, raw)) }];
+  });
+
+  logger.info(
+    { subject: params.subject, components: components.length, edges: edges.length },
+    'Knowledge components proposed',
+  );
+
+  return { components, edges };
 }
 
 // ─── Service export ────────────────────────────────────────────────────────────
@@ -1159,4 +1420,6 @@ export const aiService = {
   generateMasteryQuestions,
   gradeAnswer,
   gradeAnswers,
+  generateMicroLesson,
+  proposeKnowledgeComponents,
 };
