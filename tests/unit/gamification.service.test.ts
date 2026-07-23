@@ -47,27 +47,62 @@ describe('XP award edge cases', () => {
 
 // ─── Streak Edge Cases ────────────────────────────────────────────────────────
 
+/**
+ * Streak days are WAT (UTC+1) calendar days — the same boundary the AI budget,
+ * mastery-attempt caps and study reminders use.
+ *
+ * Every instant below is written in UTC and annotated with its WAT wall-clock, so
+ * these assertions are about the PRODUCT'S day boundary rather than the machine's.
+ * The earlier version of this suite used bare UTC instants and therefore passed
+ * only on a UTC runner; it failed on any other machine, which is what made these
+ * two look like flaky "pre-existing failures" rather than a real timezone bug.
+ */
 describe('Streak boundary conditions', () => {
-  it('correctly identifies yesterday vs two days ago (the exact midnight boundary)', () => {
-    const today          = new Date('2025-06-15T23:59:59Z');
-    const yesterday      = new Date('2025-06-14T00:00:01Z');
-    const twoDaysAgo     = new Date('2025-06-13T23:59:59Z');
+  it('correctly identifies yesterday vs two days ago (the exact WAT midnight boundary)', () => {
+    // 2025-06-15 22:00 WAT — late on the 15th.
+    const today      = new Date('2025-06-15T21:00:00Z');
+    // 2025-06-14 00:30 WAT — the very first minutes of the 14th. Nearly 46 hours
+    // earlier in elapsed time, but the PREVIOUS calendar day, so it extends.
+    const yesterday  = new Date('2025-06-13T23:30:00Z');
+    // 2025-06-13 23:30 WAT — the last minutes of the 13th. Only 22 hours before
+    // `yesterday`, but a day further back on the calendar, so it resets.
+    const twoDaysAgo = new Date('2025-06-13T22:30:00Z');
 
     const { newStreak: extendStreak } = evaluateStreak(5, yesterday, today);
     const { newStreak: resetStreak }  = evaluateStreak(5, twoDaysAgo, today);
 
-    expect(extendStreak).toBe(6); // consecutive — extend
-    expect(resetStreak).toBe(1);  // gap — reset
+    expect(extendStreak).toBe(6); // consecutive calendar day — extend
+    expect(resetStreak).toBe(1);  // a day was missed — reset
   });
 
   it('does not double-increment streak when called twice on same day', () => {
-    const today         = new Date('2025-06-15T20:00:00Z');
-    const todayMorning  = new Date('2025-06-15T08:00:00Z');
+    // Both 2025-06-15 in WAT: 21:00 and 09:00.
+    const today        = new Date('2025-06-15T20:00:00Z');
+    const todayMorning = new Date('2025-06-15T08:00:00Z');
 
     const { newStreak, shouldUpdate } = evaluateStreak(3, todayMorning, today);
 
     expect(newStreak).toBe(3);     // no change
     expect(shouldUpdate).toBe(false);
+  });
+
+  it('rolls the day at WAT midnight, not UTC midnight', () => {
+    // 23:30 UTC on the 15th is already 00:30 WAT on the 16th. A UTC-based
+    // implementation would call these the same day; a WAT one extends the streak.
+    const lateNight = new Date('2025-06-15T22:30:00Z'); // 23:30 WAT, 15th
+    const justAfter = new Date('2025-06-15T23:30:00Z'); // 00:30 WAT, 16th
+
+    const { newStreak, shouldUpdate } = evaluateStreak(4, lateNight, justAfter);
+
+    expect(newStreak).toBe(5);
+    expect(shouldUpdate).toBe(true);
+  });
+
+  it('does not extend a streak from a future date (clock skew / restored backup)', () => {
+    const today    = new Date('2025-06-15T12:00:00Z');
+    const tomorrow = new Date('2025-06-16T12:00:00Z');
+
+    expect(evaluateStreak(9, tomorrow, today).newStreak).toBe(1);
   });
 
   it('builds streak to arbitrarily large values correctly', () => {
