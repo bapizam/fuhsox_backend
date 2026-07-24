@@ -17,20 +17,38 @@ export interface DepartmentConfig {
   name: string;
   /** Department-specific interests; empty means "use the faculty fallback". */
   interests: string[];
+  /**
+   * How the AI should PITCH content for this department, when the faculty-level
+   * emphasis is too coarse — a Maths student and a Zoology student are both in
+   * "Sciences" but want very different framing. Absent = inherit the faculty's.
+   */
+  emphasis?: string;
 }
 
 export interface FacultyConfig {
   name: string;
   /** Fallback interests for departments that don't curate their own. */
   interests: string[];
+  /**
+   * The pedagogical framing the AI should adopt for this faculty (reformation —
+   * discipline-aware prompts). This is what replaces the old hardcoded "health
+   * science / clinical application" bias: it steers tone and example choice toward
+   * the student's ACTUAL field. Departments may override via their own `emphasis`.
+   */
+  emphasis: string;
   departments: DepartmentConfig[];
 }
 
-const d = (name: string, interests: string[] = []): DepartmentConfig => ({ name, interests });
+const d = (name: string, interests: string[] = [], emphasis?: string): DepartmentConfig => ({
+  name,
+  interests,
+  ...(emphasis ? { emphasis } : {}),
+});
 
 export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   {
     name: 'Basic Medical Sciences',
+    emphasis: 'the mechanisms behind the facts — why the body behaves as it does — favouring physiological reasoning over rote recall',
     interests: ['Anatomy', 'Physiology', 'Biochemistry', 'Pharmacology', 'Histology', 'Embryology'],
     departments: [
       d('Anatomy', ['Gross Anatomy', 'Histology', 'Embryology', 'Neuroanatomy', 'Osteology', 'Cell Biology']),
@@ -41,6 +59,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Medicine',
+    emphasis: 'clinical reasoning and application to patient scenarios, including differential diagnosis and management',
     interests: ['Internal Medicine', 'Surgery', 'Pathology', 'Pharmacology', 'Pediatrics', 'Obstetrics & Gynaecology', 'Anatomy', 'Physiology'],
     departments: [
       d('Medicine & Surgery', ['Internal Medicine', 'General Surgery', 'Pathology', 'Pediatrics', 'Obstetrics & Gynaecology', 'Community Medicine', 'Microbiology', 'Pharmacology']),
@@ -52,6 +71,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Pharmacy',
+    emphasis: 'drug mechanisms, pharmacokinetics and rational, safe therapeutics',
     interests: ['Pharmacology', 'Pharmaceutics', 'Pharmacognosy', 'Medicinal Chemistry', 'Clinical Pharmacy', 'Pharmaceutical Microbiology'],
     departments: [
       d('Clinical Pharmacy', ['Clinical Pharmacy', 'Pharmacotherapy', 'Pharmacokinetics', 'Pharmacovigilance', 'Pharmacology']),
@@ -61,24 +81,32 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Sciences',
+    emphasis: 'rigorous reasoning with concrete worked examples — derivations, proofs or calculations wherever the topic calls for them',
     interests: ['Mathematics', 'Physics', 'Chemistry', 'Biology', 'Computer Science', 'Statistics', 'Microbiology'],
     departments: [
       d('Biochemistry', ['Metabolism', 'Molecular Biology', 'Enzymology', 'Clinical Biochemistry', 'Genetics']),
-      d('Chemistry', ['Organic Chemistry', 'Inorganic Chemistry', 'Physical Chemistry', 'Analytical Chemistry', 'Industrial Chemistry']),
-      d('Computer Science', ['Programming', 'Data Structures', 'Algorithms', 'Databases', 'Operating Systems', 'Networks', 'Artificial Intelligence', 'Web Development']),
+      d('Chemistry', ['Organic Chemistry', 'Inorganic Chemistry', 'Physical Chemistry', 'Analytical Chemistry', 'Industrial Chemistry'],
+        'reaction mechanisms, structure–property reasoning and balanced, quantitative work'),
+      d('Computer Science', ['Programming', 'Data Structures', 'Algorithms', 'Databases', 'Operating Systems', 'Networks', 'Artificial Intelligence', 'Web Development'],
+        'algorithmic thinking, correct implementation and complexity analysis; use code or pseudocode where it clarifies'),
       d('Geology', ['Mineralogy', 'Petrology', 'Structural Geology', 'Palaeontology', 'Geophysics', 'Hydrogeology']),
-      d('Mathematics', ['Calculus', 'Linear Algebra', 'Differential Equations', 'Abstract Algebra', 'Real Analysis', 'Numerical Methods']),
+      d('Mathematics', ['Calculus', 'Linear Algebra', 'Differential Equations', 'Abstract Algebra', 'Real Analysis', 'Numerical Methods'],
+        'formal, step-by-step reasoning with rigorous derivations and proofs — always show the working'),
       d('Microbiology', ['Medical Microbiology', 'Virology', 'Immunology', 'Bacteriology', 'Mycology', 'Parasitology']),
-      d('Physics', ['Mechanics', 'Electromagnetism', 'Thermodynamics', 'Quantum Physics', 'Optics', 'Electronics']),
-      d('Statistics', ['Probability', 'Statistical Inference', 'Regression Analysis', 'Design of Experiments', 'Biostatistics']),
+      d('Physics', ['Mechanics', 'Electromagnetism', 'Thermodynamics', 'Quantum Physics', 'Optics', 'Electronics'],
+        'first-principles derivation and quantitative problem-solving with correct units'),
+      d('Statistics', ['Probability', 'Statistical Inference', 'Regression Analysis', 'Design of Experiments', 'Biostatistics'],
+        'probabilistic reasoning, correct interpretation of results, and fully worked calculations'),
       d('Zoology', ['Invertebrate Zoology', 'Vertebrate Zoology', 'Ecology', 'Genetics', 'Parasitology', 'Entomology']),
     ],
   },
   {
     name: 'Social Sciences',
+    emphasis: 'theory applied to real cases, with critical analysis and evidence',
     interests: ['Economics', 'Psychology', 'Sociology', 'Political Science', 'Mass Communication', 'Geography'],
     departments: [
-      d('Economics', ['Microeconomics', 'Macroeconomics', 'Econometrics', 'Development Economics', 'Public Finance']),
+      d('Economics', ['Microeconomics', 'Macroeconomics', 'Econometrics', 'Development Economics', 'Public Finance'],
+        'economic reasoning with models, graphs and quantitative worked examples'),
       d('Geography', ['Physical Geography', 'Human Geography', 'GIS & Remote Sensing', 'Climatology', 'Population Studies']),
       d('Mass Communication', ['Journalism', 'Broadcasting', 'Public Relations', 'Advertising', 'Media Law & Ethics', 'Film Studies']),
       d('Political Science', ['Political Theory', 'International Relations', 'Public Administration', 'Comparative Politics', 'Nigerian Government']),
@@ -88,10 +116,13 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Management Sciences',
+    emphasis: 'applied analysis of real business and financial scenarios, and sound decision-making',
     interests: ['Accounting', 'Business Administration', 'Marketing', 'Banking & Finance', 'Economics', 'Public Administration'],
     departments: [
-      d('Accounting', ['Financial Accounting', 'Cost Accounting', 'Auditing', 'Taxation', 'Management Accounting']),
-      d('Actuarial Science', ['Actuarial Mathematics', 'Risk Theory', 'Life Contingencies', 'Financial Mathematics', 'Statistics']),
+      d('Accounting', ['Financial Accounting', 'Cost Accounting', 'Auditing', 'Taxation', 'Management Accounting'],
+        'correct application of accounting standards with fully worked figures and statements'),
+      d('Actuarial Science', ['Actuarial Mathematics', 'Risk Theory', 'Life Contingencies', 'Financial Mathematics', 'Statistics'],
+        'quantitative risk and financial mathematics with fully worked calculations'),
       d('Banking & Finance', ['Corporate Finance', 'Investment Analysis', 'Financial Markets', 'Risk Management', 'Monetary Economics']),
       d('Business Administration', ['Management Principles', 'Organisational Behaviour', 'Strategic Management', 'Entrepreneurship', 'Operations Management']),
       d('Marketing', ['Consumer Behaviour', 'Digital Marketing', 'Brand Management', 'Market Research', 'Sales Management']),
@@ -100,6 +131,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Engineering',
+    emphasis: 'first-principles derivation, quantitative problem-solving and design trade-offs, always with correct units',
     interests: ['Mathematics', 'Physics', 'Engineering Mechanics', 'Thermodynamics', 'Circuit Analysis', 'Materials Science'],
     departments: [
       d('Chemical Engineering', ['Thermodynamics', 'Fluid Mechanics', 'Reaction Engineering', 'Process Control', 'Mass Transfer']),
@@ -113,6 +145,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Environmental Sciences',
+    emphasis: 'applied design and technical problem-solving grounded in real site and context examples',
     interests: ['Architecture', 'Building Technology', 'Estate Management', 'Surveying', 'Urban Planning', 'Quantity Surveying'],
     departments: [
       d('Architecture', ['Architectural Design', 'Building Technology', 'History of Architecture', 'Environmental Design', 'CAD']),
@@ -125,6 +158,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Agriculture',
+    emphasis: 'applied field and production practice grounded in the underlying science',
     interests: ['Crop Science', 'Animal Science', 'Soil Science', 'Agricultural Economics', 'Food Science', 'Agricultural Extension'],
     departments: [
       d('Agricultural Economics', ['Farm Management', 'Agricultural Marketing', 'Resource Economics', 'Agribusiness', 'Rural Development']),
@@ -137,6 +171,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Arts & Humanities',
+    emphasis: 'close reading, argument and interpretation supported by textual and historical evidence',
     interests: ['Literature', 'History', 'Philosophy', 'Linguistics', 'Religious Studies', 'Theatre Arts'],
     departments: [
       d('English & Literary Studies', ['Poetry', 'Prose Fiction', 'Drama', 'Literary Criticism', 'African Literature', 'Grammar']),
@@ -149,6 +184,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Education',
+    emphasis: 'pedagogical reasoning and application to real teaching and learning contexts',
     interests: ['Educational Psychology', 'Curriculum Studies', 'Science Education', 'Guidance & Counselling', 'Educational Management'],
     departments: [
       d('Adult Education', ['Andragogy', 'Community Education', 'Literacy Studies', 'Vocational Education']),
@@ -160,6 +196,7 @@ export const ACADEMIC_FACULTIES: FacultyConfig[] = [
   },
   {
     name: 'Law',
+    emphasis: 'IRAC-style reasoning (issue, rule, application, conclusion) grounded in statute and case authority',
     interests: ['Constitutional Law', 'Criminal Law', 'Contract Law', 'Commercial Law', 'International Law', 'Jurisprudence'],
     departments: [
       d('Common Law', ['Contract Law', 'Law of Torts', 'Criminal Law', 'Land Law', 'Equity & Trusts']),
@@ -201,4 +238,65 @@ export function resolveInterests(faculty?: string, department?: string): string[
   if (facultyRow && facultyRow.interests.length > 0) return facultyRow.interests;
 
   return GENERAL_INTERESTS;
+}
+
+export interface Discipline {
+  /** The matched faculty name, or the student's free-text value, or null. */
+  faculty: string | null;
+  /** The matched department name, or the student's free-text value, or null. */
+  department: string | null;
+  /** How the AI should pitch content for this student — see `FacultyConfig.emphasis`. */
+  emphasis: string;
+}
+
+/**
+ * How to frame AI content for a student with no recognised faculty/department yet
+ * — discipline-neutral, and deliberately NOT health-flavoured. This is what a maths
+ * student saw "clinical application" instead of, before the reformation.
+ */
+const GENERAL_EMPHASIS =
+  'clear reasoning and genuine understanding over rote memorisation, with concrete worked examples appropriate to the subject';
+
+/**
+ * Resolve the pedagogical framing for a (faculty, department) pair — the single
+ * fact that lets every AI prompt speak the student's discipline instead of assuming
+ * health science (reformation — discipline-aware prompts).
+ *
+ * DEPARTMENT-FIRST with a FACULTY FALLBACK, exactly like `resolveInterests`: a
+ * department that curates its own `emphasis` uses it (Maths wants proofs, not the
+ * Sciences faculty's generic "derivations or calculations"); otherwise the faculty's
+ * emphasis applies. Unmatched free-text names pass THROUGH (they are still shown to
+ * the model as the student's field) but fall back to a neutral, non-clinical
+ * emphasis. Matching is case-insensitive and trimmed, so client free-text lines up.
+ */
+export function resolveDiscipline(faculty?: string, department?: string): Discipline {
+  const facultyRow = faculty
+    ? ACADEMIC_FACULTIES.find((f) => f.name.toLowerCase() === faculty.trim().toLowerCase())
+    : undefined;
+
+  // Empty/whitespace free-text collapses to null; a real value passes through.
+  // (`??` is wrong here — an empty string is not nullish but must still become null.)
+  const nonEmpty = (value?: string): string | null => {
+    const trimmed = value?.trim() ?? '';
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  let emphasis = facultyRow?.emphasis ?? GENERAL_EMPHASIS;
+  let departmentName = nonEmpty(department);
+
+  if (facultyRow && department) {
+    const deptRow = facultyRow.departments.find(
+      (dep) => dep.name.toLowerCase() === department.trim().toLowerCase(),
+    );
+    if (deptRow) {
+      departmentName = deptRow.name;
+      if (deptRow.emphasis) emphasis = deptRow.emphasis;
+    }
+  }
+
+  return {
+    faculty: facultyRow?.name ?? nonEmpty(faculty),
+    department: departmentName,
+    emphasis,
+  };
 }

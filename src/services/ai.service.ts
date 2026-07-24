@@ -6,27 +6,86 @@ import { REDIS_KEYS } from '@config/constants';
 import { incrWithExpiry, getCount, getEndOfDayTTL, getTodayWAT } from '@lib/redis';
 import { AppError, type GeneratedQuestion, type AIGenerationResult } from '@typings/models';
 import { partitionValidItems, type RawItem } from '@utils/item-validation';
+import { resolveDiscipline } from '@config/academic';
+import { effectiveState, revisionPriority, type ObjectiveSnapshot } from '@utils/mastery';
 import logger from '@lib/logger';
 
-// ─── System Prompts ────────────────────────────────────────────────────────────
+// ─── Discipline context (reformation — discipline-aware prompts) ───────────────
+//
+// Every prompt below used to hardcode "Nigerian university health science students
+// at FUHSO … clinical application". At a university with Maths, Law, Engineering
+// and Arts faculties that is simply wrong — a maths student was shown clinical
+// framing. The fix is one shared directive, built from the student's REAL faculty +
+// department + institution, injected ahead of each (now discipline-neutral) system
+// prompt. The health emphasis is no longer special — it is just what a medical
+// student's `emphasis` happens to say.
 
-const QUESTION_GENERATION_SYSTEM_PROMPT = `You are an expert academic question setter for Nigerian university health science students at the Federal University of Health Sciences, Otukpo (FUHSO).
-Generate exam-quality questions that test deep understanding, critical thinking, and clinical application — not rote memorisation.
+interface LearnerContext {
+  institutionName: string;
+  faculty: string | null;
+  department: string | null;
+  emphasis: string;
+}
+
+/**
+ * Read the student's discipline once, for a prompt. One cheap query; the faculty /
+ * department come from onboarding and the emphasis from `config/academic`. Falls
+ * back to a neutral, NON-clinical framing when the student has set no department.
+ */
+async function getLearnerContext(userId: string, institutionId: string): Promise<LearnerContext> {
+  const [user, institution] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { faculty: true, department: true } }),
+    prisma.institution.findUnique({ where: { id: institutionId }, select: { name: true } }),
+  ]);
+  const discipline = resolveDiscipline(user?.faculty ?? undefined, user?.department ?? undefined);
+  return {
+    institutionName: institution?.name ?? 'the university',
+    faculty: discipline.faculty,
+    department: discipline.department,
+    emphasis: discipline.emphasis,
+  };
+}
+
+/**
+ * The one line that makes a prompt speak the student's discipline. Prepended to a
+ * neutral system prompt so the SAME generator serves a physiologist and a
+ * mathematician, each in their own idiom. The explicit "do not assume clinical"
+ * clause is load-bearing: the models were trained on enough medicine that, absent
+ * this, a bare topic like "transport" drifts toward the nephron.
+ */
+function disciplineDirective(ctx: LearnerContext): string {
+  const who = ctx.department
+    ? `a student in the Department of ${ctx.department}${ctx.faculty ? `, Faculty of ${ctx.faculty},` : ''}`
+    : ctx.faculty
+      ? `a student in the Faculty of ${ctx.faculty}`
+      : 'a university student';
+  return `You are helping ${who} at ${ctx.institutionName}. Pitch everything to THAT discipline: emphasise ${ctx.emphasis}. Draw examples and terminology from that field. Do NOT assume a medical, clinical or health-science context unless the specific topic is itself medical.`;
+}
+
+/** Compose a discipline directive ahead of a neutral system prompt. */
+function withDiscipline(ctx: LearnerContext, systemPrompt: string): string {
+  return `${disciplineDirective(ctx)}\n\n${systemPrompt}`;
+}
+
+// ─── System Prompts (discipline-NEUTRAL — the directive above supplies the field) ─
+
+const QUESTION_GENERATION_SYSTEM_PROMPT = `You are an expert academic question setter.
+Generate exam-quality questions that test deep understanding, critical thinking, and genuine application — not rote memorisation.
 For MCQs: provide one clearly correct answer and three plausible, educationally valuable distractors. No trick questions.
 For short answer: provide a concise model answer.
 CRITICAL: Always respond with VALID JSON ONLY — no markdown fences, no preamble, no explanation outside JSON.
 JSON format strictly: { "questions": [{ "question_text": string, "options"?: [{"key": string, "text": string}], "correct_answer": string, "explanation": string, "quality_flag": "good" }] }`;
 
-const FEEDBACK_SYSTEM_PROMPT = `You are a supportive and knowledgeable academic tutor for Nigerian university health science students.
+const FEEDBACK_SYSTEM_PROMPT = `You are a supportive and knowledgeable academic tutor.
 When a student answers a question incorrectly, provide:
 1. A brief, encouraging acknowledgement (not dismissive)
 2. A clear explanation of WHY the correct answer is right
 3. WHY the student's chosen answer is wrong (address their specific misconception)
-4. A memorable clinical/conceptual tip to help them remember
+4. A memorable, discipline-appropriate tip to help them remember
 Keep responses concise (150-250 words), warm, and pedagogically sound.
 Respond in plain text — no markdown formatting.`;
 
-const STUDY_PLAN_SYSTEM_PROMPT = `You are an expert academic coach for Nigerian university health sciences students.
+const STUDY_PLAN_SYSTEM_PROMPT = `You are an expert academic coach.
 Generate a structured, realistic, week-by-week study plan in strict JSON format.
 JSON format: { "weeks": [{ "week_number": number, "days": [{ "day": string, "date": string, "tasks": [{ "subject": string, "topic": string, "duration_mins": number, "activity_type": string, "recommended_question_set": string, "completed": false }] }] }], "milestones": [string] }
 No markdown, no preamble. Valid JSON only.`;
@@ -59,11 +118,12 @@ export async function generateQuestions(params: {
     );
   }
 
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
   const prompt = buildGenerationPrompt(params);
 
   // ── Call whichever provider is active (Claude or Gemini) ────────────────────
   const response = await callAI({
-    system:     QUESTION_GENERATION_SYSTEM_PROMPT,
+    system:     withDiscipline(ctx, QUESTION_GENERATION_SYSTEM_PROMPT),
     messages:   [{ role: 'user', content: prompt }],
     max_tokens: 4096,
   });
@@ -170,6 +230,7 @@ export async function streamAnswerFeedback(
     return notice;
   }
 
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
   const prompt = buildFeedbackPrompt(params.question, params.chosenAnswer);
 
   let fullText = '';
@@ -177,7 +238,7 @@ export async function streamAnswerFeedback(
   try {
     // ── Stream feedback via active provider ─────────────────────────────────
     const result = await streamFeedback(socket, {
-      system:      FEEDBACK_SYSTEM_PROMPT,
+      system:      withDiscipline(ctx, FEEDBACK_SYSTEM_PROMPT),
       messages:    [{ role: 'user', content: prompt }],
       max_tokens:  500,
       session_id:  params.sessionId,
@@ -273,11 +334,18 @@ export async function generateStudyPlan(params: {
     );
   }
 
-  const prompt = buildStudyPlanPrompt(params);
+  // Ground the plan in what the student is ACTUALLY studying — their loaded
+  // materials, their objectives and where they are weakest — instead of generating
+  // a generic timetable from subject names alone (reformation — grounded planner).
+  // Empty when the student has loaded nothing yet, in which case the prompt cleanly
+  // falls back to the subjects-only form.
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
+  const grounding = await gatherPlanGrounding(params.userId);
+  const prompt = buildStudyPlanPrompt(params, grounding);
 
   // ── Call whichever provider is active ────────────────────────────────────
   const response = await callAI({
-    system:     STUDY_PLAN_SYSTEM_PROMPT,
+    system:     withDiscipline(ctx, STUDY_PLAN_SYSTEM_PROMPT),
     messages:   [{ role: 'user', content: prompt }],
     max_tokens: 8192,
   });
@@ -448,10 +516,10 @@ function buildGenerationPrompt(params: {
 
 Topic: "${params.topic}"
 
-Context: Nigerian university health sciences curriculum (Federal University of Health Sciences, Otukpo — FUHSO).
+Interpret the topic within the student's discipline (stated in the system role above). If the topic is ambiguous across fields, resolve it toward THAT discipline.
 
 Requirements:
-- Questions must test real understanding and clinical application
+- Questions must test real understanding and application, not recall
 - Each question must have a detailed explanation of the correct answer
 - For MCQs: exactly 4 options (A, B, C, D) with one correct answer
 - Difficulty calibration: ${
@@ -476,23 +544,121 @@ ${question.explanation ? `OFFICIAL EXPLANATION: ${question.explanation}` : ''}
 The student got this wrong. Please provide helpful, encouraging feedback explaining the correct answer and addressing their specific misconception.`;
 }
 
-function buildStudyPlanPrompt(params: {
-  subjects: string[]; examDate: Date; dailyHours: number;
-}): string {
+function buildStudyPlanPrompt(
+  params: { subjects: string[]; examDate: Date; dailyHours: number },
+  grounding: string,
+): string {
   const today     = new Date();
   const weeksLeft = Math.max(1, Math.ceil(
     (params.examDate.getTime() - today.getTime()) / (7 * 86400000),
   ));
 
-  return `Create a ${weeksLeft}-week study plan for a Nigerian health science student.
+  return `Create a ${weeksLeft}-week study plan for this student (their discipline is in the system role above).
 
 Subjects: ${params.subjects.join(', ')}
 Exam date: ${params.examDate.toISOString().split('T')[0]}
 Available study hours per day: ${params.dailyHours}
 Starting date: ${today.toISOString().split('T')[0]}
 Weeks available: ${weeksLeft}
+${grounding}
 
-Create a realistic, balanced plan that allocates time proportionally across subjects, includes practice question sessions, and has clear weekly milestones. Format as specified JSON.`;
+Create a realistic, balanced plan that ${
+  grounding
+    ? 'is built around the specific materials, chapters and objectives listed above — front-loading the weakest areas, and mapping practice-question sessions to those objectives'
+    : 'allocates time proportionally across the subjects listed'
+}, and has clear weekly milestones. Format as specified JSON.`;
+}
+
+/**
+ * Gather the student's real learning state for the planner (reformation — grounded
+ * planner). Without this, `generateStudyPlan` only ever saw subject NAMES and
+ * produced the generic timetable any model would — "Week 1: review Physiology" —
+ * with no idea what the student had loaded or where they were weak.
+ *
+ * Pulls three things and folds them into a prompt block: the materials/chapters
+ * they have actually loaded, their objectives grouped by subject with live
+ * (decay-adjusted) state, and the weakest objectives by revision priority — the
+ * same pure `utils/mastery` maths the analytics dashboard uses, so the plan and the
+ * dashboard agree on what "weak" means.
+ *
+ * Returns '' when the student has loaded nothing, so the caller falls back to the
+ * subjects-only prompt rather than dressing an empty state as content. Costs no AI.
+ */
+async function gatherPlanGrounding(userId: string): Promise<string> {
+  const [objectives, resources] = await Promise.all([
+    prisma.learningObjective.findMany({
+      where:  { user_id: userId },
+      select: {
+        id: true, subject: true, statement: true, state: true,
+        mastery_score: true, confidence: true, weight: true,
+        next_review_at: true, fsrs_stability: true, fsrs_last_review: true,
+      },
+      orderBy: { subject: 'asc' },
+    }),
+    prisma.learningResource.findMany({
+      where:  { user_id: userId },
+      select: {
+        title: true, course_code: true,
+        nodes: { where: { depth: 0 }, select: { title: true }, orderBy: { ordinal: 'asc' }, take: 14 },
+      },
+    }),
+  ]);
+
+  if (objectives.length === 0 && resources.length === 0) return '';
+
+  const now = new Date();
+  const lines: string[] = [];
+
+  if (resources.length > 0) {
+    lines.push('Loaded materials and their chapters:');
+    for (const r of resources.slice(0, 12)) {
+      const chapters = r.nodes.map((n) => n.title).join('; ');
+      lines.push(`- ${r.title}${r.course_code ? ` (${r.course_code})` : ''}${chapters ? ` — chapters: ${chapters}` : ''}`);
+    }
+    lines.push('');
+  }
+
+  if (objectives.length > 0) {
+    const bySubject = new Map<string, typeof objectives>();
+    for (const o of objectives) {
+      const bucket = bySubject.get(o.subject);
+      if (bucket) bucket.push(o);
+      else bySubject.set(o.subject, [o]);
+    }
+
+    lines.push("What the student is actually studying (their objectives, with current state):");
+    let shown = 0;
+    for (const [subject, group] of bySubject) {
+      if (shown >= 40) break;
+      lines.push(`[${subject}]`);
+      for (const o of group.slice(0, 8)) {
+        if (shown >= 40) break;
+        lines.push(`  - ${o.statement} — ${effectiveState(o.state, o.next_review_at, now)}`);
+        shown += 1;
+      }
+    }
+    lines.push('');
+
+    const snapshots: ObjectiveSnapshot[] = objectives.map((o) => ({
+      id: o.id, subject: o.subject, state: o.state,
+      mastery_score: o.mastery_score, confidence: o.confidence, weight: o.weight,
+      next_review_at: o.next_review_at,
+      fsrs_stability: o.fsrs_stability, fsrs_last_review: o.fsrs_last_review,
+    }));
+    const statementById = new Map(objectives.map((o) => [o.id, o.statement]));
+    const weak = revisionPriority(snapshots, now).slice(0, 12);
+    if (weak.length > 0) {
+      lines.push('Weakest areas — schedule these EARLIEST and most often:');
+      for (const w of weak) {
+        lines.push(`  - ${statementById.get(w.objective_id) ?? ''} (${w.subject}) — ${w.reason.replace(/_/g, ' ')}`);
+      }
+      lines.push('');
+    }
+  }
+
+  return `
+=== THIS STUDENT'S ACTUAL LEARNING STATE (ground the plan in this, not generic topics) ===
+${lines.join('\n')}`;
 }
 
 // ─── Response Parser ───────────────────────────────────────────────────────────
@@ -528,7 +694,7 @@ function parseGeneratedQuestions(
 const SYLLABUS_SYSTEM_PROMPT = `You are an academic librarian who extracts the structure of study material.
 You return ONLY valid JSON. You never invent chapters that are not present in the text.`;
 
-const OBJECTIVES_SYSTEM_PROMPT = `You are an expert curriculum designer for Nigerian university health sciences students.
+const OBJECTIVES_SYSTEM_PROMPT = `You are an expert curriculum designer.
 You write granular, ASSESSABLE learning objectives — each one must be provable by a question.
 Never write vague objectives like "understand the topic". Start each with an action verb
 appropriate to its Bloom level (define, explain, calculate, derive, differentiate, evaluate).
@@ -651,10 +817,11 @@ export async function generateLearningObjectives(params: {
 }): Promise<{ statement: string; bloom_level: BloomLevelName }[]> {
   await consumeAIBudget(params.userId, params.institutionId);
 
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
   const grounding = groundingBlock((params.groundingChunks ?? []).map((text) => ({ text })));
 
   const response = await callAI({
-    system:   OBJECTIVES_SYSTEM_PROMPT,
+    system:   withDiscipline(ctx, OBJECTIVES_SYSTEM_PROMPT),
     messages: [
       {
         role: 'user',
@@ -985,7 +1152,7 @@ export async function generateMasteryQuestions(params: {
 
 // ─── Free-response grading (reformation Phase 2) ───────────────────────────────
 
-const GRADING_SYSTEM_PROMPT = `You are a fair, experienced examiner marking Nigerian university health science students' written answers.
+const GRADING_SYSTEM_PROMPT = `You are a fair, experienced examiner marking a university student's written answers.
 You mark for UNDERSTANDING, not wording: a correct answer expressed differently from the model answer is CORRECT.
 Accept synonyms, paraphrase, different word order, minor spelling errors, and abbreviations a marker would accept.
 For numeric answers: accept any equivalent form (0.5 = 1/2 = 50%), accept correct answers with or without units, and accept
@@ -1064,6 +1231,7 @@ export async function gradeAnswers(params: {
   }
 
   try {
+    const ctx = await getLearnerContext(params.userId, params.institutionId);
     const block = params.items
       .map((item, index) => {
         const parts = [
@@ -1078,7 +1246,7 @@ export async function gradeAnswers(params: {
       .join('\n\n');
 
     const response = await callAI({
-      system:   GRADING_SYSTEM_PROMPT,
+      system:   withDiscipline(ctx, GRADING_SYSTEM_PROMPT),
       messages: [
         {
           role: 'user',
@@ -1131,12 +1299,12 @@ Return ONLY JSON: { "grades": [{ "index": 0, "is_correct": true, "score": 1, "fe
 
 // ─── Micro-lessons (test-explain-retest — reformation Phase 3C) ────────────────
 
-const MICRO_LESSON_SYSTEM_PROMPT = `You are a patient, expert tutor for Nigerian university health science students.
+const MICRO_LESSON_SYSTEM_PROMPT = `You are a patient, expert tutor.
 A student has just failed an assessment, and you know EXACTLY which misconception each mistake came from.
 Teach to that misconception specifically — never give a general summary of the topic.
 For each misconception: state plainly why that belief is wrong, give the correct reasoning, then a SHORT concrete worked example.
 Be warm and direct. Never condescend, never pad. A student who just failed is already discouraged.
-SAFETY: you are teaching clinical material. If the provided passages do not support a claim, leave it out entirely rather than guessing.
+SAFETY: teach only what the provided passages support. If they do not support a claim, leave it out entirely rather than guessing — this matters most in fields where a confident wrong answer is dangerous.
 CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
 JSON format strictly: { "sections": [{ "misconception": string, "correction": string, "worked_example": string, "tip": string }] }`;
 
@@ -1182,13 +1350,14 @@ export async function generateMicroLesson(params: {
 
   await consumeAIBudget(params.userId, params.institutionId);
 
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
   const grounded = params.grounding ?? [];
   const grounding = groundingBlock(grounded);
 
   const list = params.misconceptions.map((m, i) => `${i + 1}. ${m}`).join('\n');
 
   const response = await callAI({
-    system:   MICRO_LESSON_SYSTEM_PROMPT,
+    system:   withDiscipline(ctx, MICRO_LESSON_SYSTEM_PROMPT),
     messages: [
       {
         role: 'user',
