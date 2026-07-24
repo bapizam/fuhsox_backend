@@ -182,9 +182,16 @@ async function callGemini(params: AICompletionParams): Promise<AICompletionResul
   const { GoogleGenerativeAI } = await import('@google/generative-ai');
   const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
 
+  // `callGemini` is only ever reached through `callAI`, the structured-JSON path
+  // (question generation, grading, study plans, …). The prose path — answer
+  // feedback — runs through `streamGemini`, never here. So we force JSON mode
+  // unconditionally: Gemini then returns syntactically valid JSON, properly
+  // escaping LaTeX like \frac and \int that otherwise breaks JSON.parse on maths
+  // topics such as "Application of derivatives".
   const model = genAI.getGenerativeModel({
     model:             'gemini-2.5-flash',
     systemInstruction: params.system,
+    generationConfig:  { responseMimeType: 'application/json' },
   });
 
   // Split messages into history (all except last) + current prompt

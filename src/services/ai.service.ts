@@ -350,16 +350,7 @@ export async function generateStudyPlan(params: {
     max_tokens: 8192,
   });
 
-  let planData: Record<string, unknown>;
-  try {
-    const cleaned = response.text
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/g, '')
-      .trim();
-    planData = JSON.parse(cleaned) as Record<string, unknown>;
-  } catch {
-    throw new AppError(500, 'INTERNAL_ERROR', 'AI returned malformed study plan data');
-  }
+  const planData = parseJSONResponse<Record<string, unknown>>(response.text, 'study plan data');
 
   // Count the successful generation against today's budget
   await incrWithExpiry(redisKey, getEndOfDayTTL());
@@ -668,14 +659,12 @@ function parseGeneratedQuestions(
   _questionType: string,
 ): GeneratedQuestion[] {
   try {
-    const cleaned = rawText
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/g, '')
-      .trim();
-
-    const parsed = JSON.parse(cleaned) as { questions?: GeneratedQuestion[] };
+    const parsed = JSON.parse(cleanJSONText(rawText)) as { questions?: GeneratedQuestion[] };
     if (!Array.isArray(parsed.questions)) {
-      logger.warn('AI response missing questions array');
+      logger.warn(
+        { length: rawText.length, rawText: rawText.slice(0, 1000) },
+        'AI response missing questions array',
+      );
       return [];
     }
 
@@ -684,7 +673,10 @@ function parseGeneratedQuestions(
       typeof q.correct_answer === 'string',
     );
   } catch (err) {
-    logger.error({ err, rawText: rawText.substring(0, 200) }, 'Failed to parse AI question response');
+    logger.error(
+      { err, length: rawText.length, rawText: rawText.slice(0, 4000) },
+      'Failed to parse AI question response',
+    );
     return [];
   }
 }
@@ -722,15 +714,51 @@ async function consumeAIBudget(userId: string, institutionId: string): Promise<v
   await incrWithExpiry(redisKey, getEndOfDayTTL());
 }
 
-/** Strip markdown fences the models sometimes wrap JSON in. */
+/**
+ * Best-effort recovery of a JSON payload from a model response.
+ *
+ * Gemini (primary) now runs in JSON mode, but the Claude fallback carries no such
+ * guarantee, so we defend here too. Models wrap JSON in ```json fences, add a
+ * sentence of preamble, leave a trailing comma, or — worst for maths topics like
+ * "Application of derivatives" — emit LaTeX (\frac, \int) whose lone backslashes
+ * are invalid JSON escapes. We strip fences, slice to the outermost bracket pair,
+ * escape any backslash that doesn't begin a valid JSON escape, and drop trailing
+ * commas. Imperfect (a LaTeX \tau still misparses to a tab) but it turns hard
+ * failures into usable output; provider JSON mode is the real fix.
+ */
+function cleanJSONText(raw: string): string {
+  let s = raw
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim();
+
+  // Slice to the outermost { … } or [ … ], dropping any prose around it.
+  const firstObj = s.indexOf('{');
+  const firstArr = s.indexOf('[');
+  const start =
+    firstArr === -1 ? firstObj :
+    firstObj === -1 ? firstArr :
+    Math.min(firstObj, firstArr);
+  const end = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+  if (start !== -1 && end > start) s = s.slice(start, end + 1);
+
+  // Escape backslashes that don't begin a valid JSON escape (\" \\ \/ \b \f \n \r \t \uXXXX).
+  s = s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+
+  // Remove trailing commas before a closing brace/bracket.
+  s = s.replace(/,\s*([}\]])/g, '$1');
+
+  return s;
+}
+
 function parseJSONResponse<T>(text: string, what: string): T {
   try {
-    const cleaned = text
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/g, '')
-      .trim();
-    return JSON.parse(cleaned) as T;
-  } catch {
+    return JSON.parse(cleanJSONText(text)) as T;
+  } catch (err) {
+    logger.error(
+      { err, what, length: text.length, rawText: text.slice(0, 4000) },
+      'Failed to parse AI JSON response',
+    );
     throw new AppError(500, 'INTERNAL_ERROR', `AI returned malformed ${what}`);
   }
 }
