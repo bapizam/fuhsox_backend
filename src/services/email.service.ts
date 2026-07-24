@@ -53,6 +53,13 @@ const smtpTransport = nodemailer.createTransport({
   requireTLS: env.SMTP_PORT === 587,
 });
 
+// ─── Template Helpers ──────────────────────────────────────────────────────────
+
+// Handlebars ships no comparison helpers, so `{{#if (gt days_remaining 1)}}` in
+// exam-countdown.hbs threw `Missing helper: "gt"` and every countdown email
+// failed to render. Registered at module load, before any template compiles.
+Handlebars.registerHelper('gt', (a: unknown, b: unknown) => Number(a) > Number(b));
+
 // ─── Template Cache ────────────────────────────────────────────────────────────
 
 const templateCache = new Map<string, HandlebarsTemplateDelegate>();
@@ -186,17 +193,36 @@ export async function sendEmail(params: SendEmailParams): Promise<void> {
 // ─── Strip HTML for plain-text fallback ───────────────────────────────────────
 
 function strip(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return (
+    html
+      // Text inside <head>/<style>/<script> survives a naive tag strip, so the
+      // text/plain part used to open with ~2KB of raw CSS — which is both what
+      // text-only clients show and what spam filters score.
+      .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '')
+      .replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+      // The hidden preheader only exists to seed the inbox preview line.
+      .replace(/<div[^>]*display\s*:\s*none[\s\S]*?<\/div>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+      .replace(/<\/table>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&copy;/gi, '(c)')
+      .replace(/&middot;/gi, '-')
+      .replace(/&mdash;/gi, '—')
+      // Layout-only entities left in the markup (&zwnj;, &shy;, …) carry no text.
+      .replace(/&[a-z]+;|&#\d+;/gi, '')
+      .split('\n')
+      .map((line) => line.trim())
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }
 
 export const emailService = { sendEmail, renderEmailTemplate };

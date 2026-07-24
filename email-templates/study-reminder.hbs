@@ -1,65 +1,134 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Time to Study!</title>
-  <style>
-    body { margin:0; padding:0; background:#f0f4f8; font-family:'Segoe UI', Arial, sans-serif; color:#333; }
-    .container { max-width:560px; margin:40px auto; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
-    .header { background:linear-gradient(135deg, #1a3c6e 0%, #2563eb 100%); padding:32px 40px; text-align:center; }
-    .header h1 { color:#ffffff; margin:0 0 4px; font-size:20px; font-weight:700; }
-    .header .emoji { font-size:40px; display:block; margin-bottom:12px; }
-    .body { padding:36px 40px; }
-    .greeting { font-size:18px; font-weight:600; color:#1a3c6e; margin-bottom:8px; }
-    .subject-card { background:#f0f4ff; border-left:4px solid #2563eb; padding:16px 20px; border-radius:6px; margin:20px 0; }
-    .subject-card .subject { font-size:22px; font-weight:700; color:#1a3c6e; }
-    .subject-card .time { font-size:14px; color:#6b7280; margin-top:4px; }
-    .streak-section { background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:16px 20px; margin:20px 0; display:flex; align-items:center; gap:12px; }
-    .streak-count { font-size:28px; font-weight:800; color:#ea580c; }
-    .streak-label { font-size:13px; color:#9a3412; }
-    .cta { text-align:center; margin:28px 0 12px; }
-    .cta a { display:inline-block; background:#2563eb; color:#ffffff; text-decoration:none; padding:16px 40px; border-radius:10px; font-size:16px; font-weight:700; }
-    .tip { font-size:13px; color:#6b7280; text-align:center; margin-top:8px; }
-    .footer { background:#f4f6f9; padding:20px 40px; text-align:center; font-size:12px; color:#9ca3af; border-top:1px solid #e5e7eb; }
-    .footer a { color:#6b7280; text-decoration:none; }
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="x-apple-disable-message-reformatting"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
+  <title>Your study session</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <style type="text/css">@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');</style>
+  <!--<![endif]-->
+  <style type="text/css">
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    a { text-decoration:none; }
+    @media only screen and (max-width:620px) {
+      .card { width:100% !important; }
+      .wrap { padding:20px 12px !important; }
+      .px   { padding-left:24px !important; padding-right:24px !important; }
+      .h1   { font-size:21px !important; line-height:29px !important; }
+      .subject { font-size:22px !important; line-height:30px !important; }
+      .btn a { display:block !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <span class="emoji">📚</span>
-      <h1>Study Time, {{user_name}}!</h1>
-    </div>
-    <div class="body">
-      <p class="greeting">Your study session is scheduled for today</p>
-      <p style="color:#6b7280; font-size:14px;">Consistency is the key to academic excellence. Here's what's on your plan:</p>
+<body style="margin:0; padding:0; width:100%; background-color:#060910;">
 
-      <div class="subject-card">
-        <div class="subject">{{subject}}</div>
-        <div class="time">🕐 Scheduled for {{time}}</div>
-      </div>
-
-      {{#if streak_count}}
-      <div class="streak-section">
-        <div>
-          <div class="streak-count">🔥 {{streak_count}}</div>
-        </div>
-        <div>
-          <div class="streak-label"><strong>Day Streak!</strong><br/>Keep it going — you're on a roll.</div>
-        </div>
-      </div>
-      {{/if}}
-
-      <div class="cta">
-        <a href="{{quiz_link}}">Start Practicing Now →</a>
-      </div>
-      <p class="tip">💡 Even 20 minutes of focused practice makes a difference.</p>
-    </div>
-    <div class="footer">
-      &copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX<br/>
-      <a href="#">Manage reminder preferences</a>
-    </div>
+  <div style="display:none; font-size:1px; color:#060910; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    {{subject}} is on your study plan for {{time}} today.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#060910" style="background-color:#060910;">
+    <tr>
+      <td class="wrap" align="center" style="padding:40px 16px; background-color:#060910; background-image:linear-gradient(180deg,#0A0E1A 0%,#0D1424 42%,#060910 100%);">
+
+        <table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#0D1424; border-radius:22px; overflow:hidden;">
+
+          <tr>
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#B4FF39; background-image:linear-gradient(90deg,#B4FF39 0%,#2EF2A6 50%,#00E5FF 100%);">&nbsp;</td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:34px 40px 26px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF; mso-line-height-rule:exactly; line-height:32px;">Fuhso<span style="color:#B4FF39; text-shadow:0 0 18px rgba(180,255,57,0.6);">X</span></div>
+              <div style="margin-top:10px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase; color:#9A9FAC;">{{institution_name}}</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:38px 40px 0;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#B4FF39;">Today's plan</div>
+              <h1 class="h1" style="margin:12px 0 14px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:25px; line-height:33px; font-weight:800; letter-spacing:-0.4px; color:#FFFFFF;">Time to study, {{user_name}}</h1>
+              <p style="margin:0 0 26px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">Consistency is what moves the needle. Here's what you lined up for today.</p>
+            </td>
+          </tr>
+
+          <!-- Subject panel -->
+          <tr>
+            <td class="px" style="padding:0 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#141A2B; border:1px solid #2F3950; border-radius:16px;">
+                <tr>
+                  <td width="3" style="width:3px; font-size:0; line-height:0; background-color:#B4FF39;">&nbsp;</td>
+                  <td style="padding:22px 24px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Subject</div>
+                    <div class="subject" style="margin-top:6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:24px; line-height:32px; font-weight:800; letter-spacing:-0.3px; color:#FFFFFF;">{{subject}}</div>
+                    <div style="margin-top:12px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Scheduled for</div>
+                    <div style="margin-top:4px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; font-weight:600; color:#C7CCD8;">{{time}}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          {{#if streak_count}}
+          <!-- Streak -->
+          <tr>
+            <td class="px" style="padding:18px 40px 0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#141A2B; border:1px solid #2F3950; border-radius:16px;">
+                <tr>
+                  <td width="96" align="center" valign="middle" style="width:96px; padding:20px 0 20px 14px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:34px; line-height:40px; font-weight:800; letter-spacing:-1px; color:#FFC24B; text-shadow:0 0 22px rgba(255,194,75,0.45); mso-line-height-rule:exactly;">{{streak_count}}</div>
+                  </td>
+                  <td valign="middle" style="padding:20px 22px 20px 8px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#FFC24B;">Day streak</div>
+                    <div style="margin-top:6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:14px; line-height:22px; color:#C7CCD8;">You're on a roll. One session today keeps it alive.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {{/if}}
+
+          <!-- CTA -->
+          <tr>
+            <td class="px" align="center" style="padding:30px 40px 0;">
+              <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" bgcolor="#B4FF39" style="border-radius:999px; mso-padding-alt:17px 44px; background-color:#B4FF39;">
+                    <a href="{{quiz_link}}" style="display:inline-block; padding:17px 44px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; font-weight:700; letter-spacing:0.2px; color:#060910; text-decoration:none; border-radius:999px;">Start practising</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:16px 0 0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:13px; line-height:21px; color:#9A9FAC;">Even twenty focused minutes moves you forward.</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:30px 40px 0;"><div style="border-top:1px solid #232B3F; font-size:0; line-height:0;">&nbsp;</div></td>
+          </tr>
+
+          <tr>
+            <td class="px" align="center" style="padding:26px 40px 32px; background-color:#0A0E1A; border-top:1px solid #232B3F;">
+              <p style="margin:0 0 6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#9A9FAC;">&copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX</p>
+              <p style="margin:0 0 8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; letter-spacing:0.4px; color:#8A90A0;">Product of Revision Software Foundation</p>
+              <a href="#" style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; color:#8A90A0; text-decoration:underline;">Manage reminder preferences</a>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
 </body>
 </html>

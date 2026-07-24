@@ -1,99 +1,145 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>We miss you!</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background:#f0f4f8; font-family:'Segoe UI', Arial, sans-serif; color:#333; padding: 20px 0; }
-    .container { max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; overflow:hidden; box-shadow:0 6px 32px rgba(0,0,0,0.09); }
-    .header { background:linear-gradient(140deg, #0f2d5e 0%, #1a56db 100%); padding:44px 40px 36px; text-align:center; }
-    .header .wave { font-size:52px; display:block; margin-bottom:16px; }
-    .header h1 { color:#ffffff; font-size:24px; font-weight:800; margin:0; letter-spacing:-0.3px; }
-    .header p  { color:rgba(255,255,255,0.75); font-size:14px; margin-top:6px; }
-    .body { padding:40px; }
-    .intro { font-size:16px; color:#374151; line-height:1.65; margin-bottom:24px; }
-    .intro strong { color:#0f2d5e; }
-    .stats-row { display:flex; gap:16px; margin-bottom:28px; }
-    .stat-card { flex:1; background:#f8faff; border:1px solid #dbe4ff; border-radius:10px; padding:16px; text-align:center; }
-    .stat-card .number { font-size:26px; font-weight:800; color:#1a56db; }
-    .stat-card .label  { font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:0.8px; margin-top:4px; }
-    .highlight { background:#fefce8; border:1px solid #fef08a; border-radius:10px; padding:18px 20px; margin-bottom:28px; font-size:14px; color:#713f12; line-height:1.6; }
-    .highlight strong { color:#92400e; }
-    .cta { text-align:center; margin:28px 0 8px; }
-    .cta a { display:inline-block; background:#1a56db; color:#ffffff; text-decoration:none; padding:16px 44px; border-radius:10px; font-size:16px; font-weight:700; letter-spacing:0.3px; }
-    .cta a:hover { background:#1447c0; }
-    .sub-cta { text-align:center; font-size:13px; color:#9ca3af; margin-top:12px; }
-    .divider { border:none; border-top:1px solid #e5e7eb; margin:28px 0; }
-    .features { display:flex; flex-direction:column; gap:12px; margin-bottom:24px; }
-    .feature { display:flex; align-items:center; gap:14px; }
-    .feature .icon { font-size:22px; flex-shrink:0; }
-    .feature .text { font-size:14px; color:#4b5563; line-height:1.5; }
-    .feature .text strong { color:#1f2937; display:block; margin-bottom:2px; }
-    .footer { background:#f8f9fb; padding:20px 40px; text-align:center; border-top:1px solid #e5e7eb; }
-    .footer p { font-size:12px; color:#9ca3af; line-height:1.8; }
-    .footer a { color:#6b7280; text-decoration:none; }
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="x-apple-disable-message-reformatting"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
+  <title>Your preparation is waiting</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <style type="text/css">@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');</style>
+  <!--<![endif]-->
+  <style type="text/css">
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    a { text-decoration:none; }
+    @media only screen and (max-width:620px) {
+      .card { width:100% !important; }
+      .wrap { padding:20px 12px !important; }
+      .px   { padding-left:24px !important; padding-right:24px !important; }
+      .h1   { font-size:22px !important; line-height:30px !important; }
+      .btn a { display:block !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <span class="wave">👋</span>
-      <h1>We miss you, {{user_name}}!</h1>
-      <p>Your academic journey is waiting for you</p>
-    </div>
+<body style="margin:0; padding:0; width:100%; background-color:#060910;">
 
-    <div class="body">
-      <p class="intro">
-        It's been a while since we've seen you on <strong>FuhsoX</strong>. Your classmates are still practising,
-        streaks are being built, and exam season doesn't wait for anyone.
-      </p>
-
-      {{#if trending_topic}}
-      <div class="highlight">
-        🔥 <strong>Trending right now:</strong> Students in your faculty are actively practising
-        <strong>{{trending_topic}}</strong> — don't get left behind.
-      </div>
-      {{/if}}
-
-      <div class="features">
-        <div class="feature">
-          <div class="icon">📚</div>
-          <div class="text">
-            <strong>Past Questions Ready</strong>
-            Thousands of exam questions organised by course, year and difficulty — pick up right where you left off.
-          </div>
-        </div>
-        <div class="feature">
-          <div class="icon">🤖</div>
-          <div class="text">
-            <strong>AI-Powered Feedback</strong>
-            Get instant, personalised explanations every time you answer a question wrong.
-          </div>
-        </div>
-        <div class="feature">
-          <div class="icon">🏆</div>
-          <div class="text">
-            <strong>Compete with Peers</strong>
-            See where you stand on the leaderboard — your ranking is waiting to be reclaimed.
-          </div>
-        </div>
-      </div>
-
-      <div class="cta">
-        <a href="{{cta_link}}">Resume Your Preparation →</a>
-      </div>
-      <p class="sub-cta">Takes less than 30 seconds to get back on track.</p>
-    </div>
-
-    <div class="footer">
-      <p>
-        &copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX<br/>
-        You received this because you have an account with FuhsoX.<br/>
-        <a href="#">Unsubscribe from re-engagement emails</a>
-      </p>
-    </div>
+  <div style="display:none; font-size:1px; color:#060910; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    Your past questions, AI feedback and leaderboard position are still here.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#060910" style="background-color:#060910;">
+    <tr>
+      <td class="wrap" align="center" style="padding:40px 16px; background-color:#060910; background-image:linear-gradient(180deg,#0A0E1A 0%,#0D1424 42%,#060910 100%);">
+
+        <table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#0D1424; border-radius:22px; overflow:hidden;">
+
+          <tr>
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#C57CFF; background-image:linear-gradient(90deg,#C57CFF 0%,#FF3DDB 50%,#00E5FF 100%);">&nbsp;</td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:34px 40px 26px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF; mso-line-height-rule:exactly; line-height:32px;">Fuhso<span style="color:#C57CFF; text-shadow:0 0 18px rgba(197,124,255,0.7);">X</span></div>
+              <div style="margin-top:10px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase; color:#9A9FAC;">{{institution_name}}</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:38px 40px 0;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#C57CFF;">Pick up where you left off</div>
+              <h1 class="h1" style="margin:12px 0 14px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; line-height:34px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF;">We've missed you, {{user_name}}</h1>
+              <p style="margin:0 0 28px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">It's been a while since your last session on <strong style="color:#FFFFFF; font-weight:700;">FuhsoX</strong>. Your classmates are still practising, streaks are still building, and exam season doesn't wait for anyone.</p>
+            </td>
+          </tr>
+
+          {{#if trending_topic}}
+          <tr>
+            <td class="px" style="padding:0 40px 26px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#141A2B; border:1px solid #2F3950; border-radius:14px;">
+                <tr>
+                  <td width="3" style="width:3px; font-size:0; line-height:0; background-color:#FF3DDB;">&nbsp;</td>
+                  <td style="padding:16px 20px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#FF3DDB;">Trending in your faculty</div>
+                    <div style="margin-top:8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:14px; line-height:22px; color:#C7CCD8;">Students around you are actively practising <strong style="color:#FFFFFF; font-weight:700;">{{trending_topic}}</strong> right now.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {{/if}}
+
+          <!-- Feature list -->
+          <tr>
+            <td class="px" style="padding:0 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td width="104" valign="top" style="width:104px; padding:3px 0 22px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#00E5FF;">Practice</div>
+                  </td>
+                  <td valign="top" style="padding:0 0 22px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:22px; font-weight:700; color:#FFFFFF;">Past questions, ready to go</div>
+                    <div style="margin-top:4px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:14px; line-height:22px; color:#9A9FAC;">Thousands of exam questions organised by course, year and difficulty.</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td width="104" valign="top" style="width:104px; padding:3px 0 22px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#C57CFF;">Feedback</div>
+                  </td>
+                  <td valign="top" style="padding:0 0 22px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:22px; font-weight:700; color:#FFFFFF;">AI feedback on every miss</div>
+                    <div style="margin-top:4px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:14px; line-height:22px; color:#9A9FAC;">Instant, personalised explanations the moment you get something wrong.</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td width="104" valign="top" style="width:104px; padding:3px 0 4px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#FF3DDB;">Ranking</div>
+                  </td>
+                  <td valign="top" style="padding:0 0 4px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:22px; font-weight:700; color:#FFFFFF;">Your place on the leaderboard</div>
+                    <div style="margin-top:4px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:14px; line-height:22px; color:#9A9FAC;">See where you stand against your peers — and reclaim your ranking.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td class="px" align="center" style="padding:32px 40px 36px;">
+              <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" bgcolor="#C57CFF" style="border-radius:999px; mso-padding-alt:17px 44px; background-color:#C57CFF;">
+                    <a href="{{cta_link}}" style="display:inline-block; padding:17px 44px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; font-weight:700; letter-spacing:0.2px; color:#060910; text-decoration:none; border-radius:999px;">Resume your preparation</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:16px 0 0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:13px; line-height:21px; color:#9A9FAC;">Takes less than thirty seconds to get back on track.</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" align="center" style="padding:26px 40px 32px; background-color:#0A0E1A; border-top:1px solid #232B3F;">
+              <p style="margin:0 0 6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#9A9FAC;">&copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX</p>
+              <p style="margin:0 0 8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; letter-spacing:0.4px; color:#8A90A0;">Product of Revision Software Foundation</p>
+              <p style="margin:0 0 8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; color:#8A90A0;">You're receiving this because you have a FuhsoX account.</p>
+              <a href="#" style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; color:#8A90A0; text-decoration:underline;">Unsubscribe from these emails</a>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
 </body>
 </html>

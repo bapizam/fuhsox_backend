@@ -1,43 +1,120 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>{{days_remaining}} Days Until Your Exam!</title>
-  <style>
-    body { margin:0; padding:0; background:#f4f6f9; font-family:'Segoe UI', Arial, sans-serif; color:#333; }
-    .container { max-width:560px; margin:40px auto; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
-    .header { background:linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%); padding:32px 40px; text-align:center; }
-    .countdown { font-size:72px; font-weight:900; color:#ffffff; line-height:1; display:block; }
-    .days-label { font-size:16px; color:rgba(255,255,255,0.8); margin-top:4px; }
-    .body { padding:36px 40px; }
-    .exam-info { background:#f5f3ff; border-left:4px solid #7c3aed; padding:14px 18px; border-radius:6px; margin-bottom:20px; }
-    .cta a { display:inline-block; background:#7c3aed; color:#fff; text-decoration:none; padding:16px 40px; border-radius:10px; font-size:16px; font-weight:700; }
-    .footer { background:#f4f6f9; padding:20px 40px; text-align:center; font-size:12px; color:#9ca3af; }
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="x-apple-disable-message-reformatting"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
+  <title>{{days_remaining}} day{{#if (gt days_remaining 1)}}s{{/if}} until your exam</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <style type="text/css">@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');</style>
+  <!--<![endif]-->
+  <style type="text/css">
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    a { text-decoration:none; }
+    @media only screen and (max-width:620px) {
+      .card { width:100% !important; }
+      .wrap { padding:20px 12px !important; }
+      .px   { padding-left:24px !important; padding-right:24px !important; }
+      .h1   { font-size:21px !important; line-height:29px !important; }
+      .hero { font-size:68px !important; line-height:70px !important; }
+      .stack { display:block !important; width:100% !important; }
+      .stack-gap { height:14px !important; line-height:14px !important; font-size:14px !important; }
+      .btn a { display:block !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <span class="countdown">{{days_remaining}}</span>
-      <div class="days-label">day{{#if (gt days_remaining 1)}}s{{/if}} until your exam ⚡</div>
-    </div>
-    <div class="body">
-      <p>Hi <strong>{{user_name}}</strong>,</p>
-      <p>Your <strong>{{subject}}</strong> exam is coming up fast. Now is the time to intensify your preparation.</p>
+<body style="margin:0; padding:0; width:100%; background-color:#060910;">
 
-      <div class="exam-info">
-        📅 <strong>Exam Date:</strong> {{exam_date}}<br/>
-        📚 <strong>Subject:</strong> {{subject}}
-      </div>
-
-      <p>Practice past questions regularly in the final stretch — it's the most effective way to consolidate what you've learned.</p>
-
-      <div style="text-align:center; margin:24px 0;">
-        <a href="{{quiz_link}}">Start a Practice Session →</a>
-      </div>
-    </div>
-    <div class="footer">&copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX</div>
+  <div style="display:none; font-size:1px; color:#060910; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    {{days_remaining}} day{{#if (gt days_remaining 1)}}s{{/if}} to your {{subject}} exam on {{exam_date}}.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#060910" style="background-color:#060910;">
+    <tr>
+      <td class="wrap" align="center" style="padding:40px 16px; background-color:#060910; background-image:linear-gradient(180deg,#0A0E1A 0%,#0D1424 42%,#060910 100%);">
+
+        <table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#0D1424; border-radius:22px; overflow:hidden;">
+
+          <tr>
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#FF3DDB; background-image:linear-gradient(90deg,#FF3DDB 0%,#C57CFF 55%,#00E5FF 100%);">&nbsp;</td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:34px 40px 26px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF; mso-line-height-rule:exactly; line-height:32px;">Fuhso<span style="color:#FF3DDB; text-shadow:0 0 18px rgba(255,61,219,0.7);">X</span></div>
+              <div style="margin-top:10px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase; color:#9A9FAC;">{{institution_name}}</div>
+            </td>
+          </tr>
+
+          <!-- Countdown hero -->
+          <tr>
+            <td align="center" style="padding:44px 24px 40px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div class="hero" style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:84px; line-height:86px; font-weight:800; letter-spacing:-3px; color:#FF3DDB; text-shadow:0 0 40px rgba(255,61,219,0.5); mso-line-height-rule:exactly;">{{days_remaining}}</div>
+              <div style="margin-top:12px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:2.4px; text-transform:uppercase; color:#C7CCD8;">Day{{#if (gt days_remaining 1)}}s{{/if}} until your exam</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:36px 40px 0;">
+              <h1 class="h1" style="margin:0 0 14px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:25px; line-height:33px; font-weight:800; letter-spacing:-0.4px; color:#FFFFFF;">The final stretch, {{user_name}}</h1>
+              <p style="margin:0 0 26px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">Your <strong style="color:#FFFFFF; font-weight:700;">{{subject}}</strong> exam is close. This is the window where focused practice pays the most — past questions consolidate what you already know and expose what you don't.</p>
+            </td>
+          </tr>
+
+          <!-- Detail cards -->
+          <tr>
+            <td class="px" style="padding:0 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td class="stack" width="48%" valign="top" style="width:48%; background-color:#141A2B; border:1px solid #2F3950; border-radius:14px; padding:18px 20px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Exam date</div>
+                    <div style="margin-top:6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; line-height:24px; font-weight:700; color:#FFFFFF;">{{exam_date}}</div>
+                  </td>
+                  <td class="stack-gap" width="4%" style="width:4%; font-size:0; line-height:0;">&nbsp;</td>
+                  <td class="stack" width="48%" valign="top" style="width:48%; background-color:#141A2B; border:1px solid #2F3950; border-radius:14px; padding:18px 20px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Subject</div>
+                    <div style="margin-top:6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; line-height:24px; font-weight:700; color:#FFFFFF;">{{subject}}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td class="px" align="center" style="padding:30px 40px 36px;">
+              <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" bgcolor="#FF3DDB" style="border-radius:999px; mso-padding-alt:17px 44px; background-color:#FF3DDB;">
+                    <a href="{{quiz_link}}" style="display:inline-block; padding:17px 44px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; font-weight:700; letter-spacing:0.2px; color:#060910; text-decoration:none; border-radius:999px;">Start a practice session</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" align="center" style="padding:26px 40px 32px; background-color:#0A0E1A; border-top:1px solid #232B3F;">
+              <p style="margin:0 0 6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#9A9FAC;">&copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX</p>
+              <p style="margin:0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; letter-spacing:0.4px; color:#8A90A0;">Product of Revision Software Foundation</p>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
 </body>
 </html>

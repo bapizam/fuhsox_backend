@@ -1,70 +1,128 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="x-apple-disable-message-reformatting"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
   <title>{{event_title}}</title>
-  <style>
-    body { margin:0; padding:0; background:#f4f6f9; font-family:'Segoe UI', Arial, sans-serif; color:#333; }
-    .container { max-width:560px; margin:40px auto; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
-    .header { padding:32px 40px; text-align:center; }
-    .header.urgent { background:#dc2626; }
-    .header.normal { background:#1a3c6e; }
-    .header h1 { color:#ffffff; margin:0; font-size:22px; font-weight:700; }
-    .header p { color:rgba(255,255,255,0.75); margin:4px 0 0; font-size:13px; }
-    .body { padding:40px; }
-    .urgency-badge { display:inline-block; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; padding:4px 12px; border-radius:99px; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:1px; margin-bottom:20px; }
-    h2.event-title { font-size:22px; color:#1a3c6e; margin:0 0 20px; font-weight:700; }
-    .event-details { background:#f8f9ff; border-radius:10px; padding:20px 24px; margin-bottom:24px; }
-    .detail-row { display:flex; align-items:flex-start; margin-bottom:12px; gap:12px; }
-    .detail-row:last-child { margin-bottom:0; }
-    .detail-icon { font-size:16px; flex-shrink:0; margin-top:2px; }
-    .detail-text { font-size:14px; color:#374151; line-height:1.5; }
-    .detail-text strong { display:block; color:#1a3c6e; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px; }
-    .description { font-size:15px; color:#4b5563; line-height:1.7; margin-bottom:28px; }
-    .cta { text-align:center; margin:28px 0; }
-    .cta a { display:inline-block; background:#1a3c6e; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:8px; font-size:15px; font-weight:600; }
-    .footer { background:#f4f6f9; padding:20px 40px; text-align:center; font-size:12px; color:#9ca3af; }
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <style type="text/css">@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');</style>
+  <!--<![endif]-->
+  <style type="text/css">
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    a { text-decoration:none; }
+    @media only screen and (max-width:620px) {
+      .card { width:100% !important; }
+      .wrap { padding:20px 12px !important; }
+      .px   { padding-left:24px !important; padding-right:24px !important; }
+      .h1   { font-size:22px !important; line-height:30px !important; }
+      .btn a { display:block !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header {{#if is_urgent}}urgent{{else}}normal{{/if}}">
-      <h1>{{institution_name}}</h1>
-      <p>Powered by FuhsoX</p>
-    </div>
-    <div class="body">
-      <p>Hi {{user_name}},</p>
+<body style="margin:0; padding:0; width:100%; background-color:#060910;">
 
-      {{#if is_urgent}}
-      <div class="urgency-badge">🚨 Urgent Notice</div>
-      {{/if}}
-
-      <h2 class="event-title">{{event_title}}</h2>
-
-      <div class="event-details">
-        <div class="detail-row">
-          <span class="detail-icon">📅</span>
-          <div class="detail-text"><strong>Date</strong>{{event_date}}</div>
-        </div>
-        {{#if event_location}}
-        <div class="detail-row">
-          <span class="detail-icon">📍</span>
-          <div class="detail-text"><strong>Location</strong>{{event_location}}</div>
-        </div>
-        {{/if}}
-      </div>
-
-      <p class="description">{{event_description}}</p>
-
-      <div class="cta">
-        <a href="{{cta_link}}">View Event Details →</a>
-      </div>
-    </div>
-    <div class="footer">
-      &copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX
-      <br/>You received this because you are enrolled at {{institution_name}}.
-    </div>
+  <div style="display:none; font-size:1px; color:#060910; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    {{event_title}} &middot; {{event_date}}
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#060910" style="background-color:#060910;">
+    <tr>
+      <td class="wrap" align="center" style="padding:40px 16px; background-color:#060910; background-image:linear-gradient(180deg,#0A0E1A 0%,#0D1424 42%,#060910 100%);">
+
+        <table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#0D1424; border-radius:22px; overflow:hidden;">
+
+          <tr>
+            {{#if is_urgent}}
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#FF5470; background-image:linear-gradient(90deg,#FF5470 0%,#FF3DDB 60%,#C57CFF 100%);">&nbsp;</td>
+            {{else}}
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#00E5FF; background-image:linear-gradient(90deg,#00E5FF 0%,#C57CFF 55%,#FF3DDB 100%);">&nbsp;</td>
+            {{/if}}
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:34px 40px 26px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF; mso-line-height-rule:exactly; line-height:32px;">Fuhso<span style="color:{{#if is_urgent}}#FF5470{{else}}#00E5FF{{/if}};">X</span></div>
+              <div style="margin-top:10px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase; color:#9A9FAC;">{{institution_name}} &middot; Official notice</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:36px 40px 0;">
+              <p style="margin:0 0 18px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">Hi {{user_name}},</p>
+
+              {{#if is_urgent}}
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px;">
+                <tr>
+                  <td style="padding:6px 14px; background-color:#2C1620; border:1px solid #FF5470; border-radius:999px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:#FF5470;">Urgent notice</td>
+                </tr>
+              </table>
+              {{/if}}
+
+              <h1 class="h1" style="margin:0 0 24px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; line-height:34px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF;">{{event_title}}</h1>
+            </td>
+          </tr>
+
+          <!-- Details -->
+          <tr>
+            <td class="px" style="padding:0 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#141A2B; border:1px solid #2F3950; border-radius:16px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Date</div>
+                    <div style="margin-top:5px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; line-height:24px; font-weight:700; color:#FFFFFF;">{{event_date}}</div>
+                    {{#if event_location}}
+                    <div style="margin-top:18px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase; color:#9A9FAC;">Location</div>
+                    <div style="margin-top:5px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; line-height:24px; font-weight:700; color:#FFFFFF;">{{event_location}}</div>
+                    {{/if}}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:26px 40px 0;">
+              <p style="margin:0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">{{event_description}}</p>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td class="px" align="center" style="padding:32px 40px 36px;">
+              <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" bgcolor="{{#if is_urgent}}#FF5470{{else}}#00E5FF{{/if}}" style="border-radius:999px; mso-padding-alt:17px 44px; background-color:{{#if is_urgent}}#FF5470{{else}}#00E5FF{{/if}};">
+                    <a href="{{cta_link}}" style="display:inline-block; padding:17px 44px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:16px; font-weight:700; letter-spacing:0.2px; color:#060910; text-decoration:none; border-radius:999px;">View event details</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" align="center" style="padding:26px 40px 32px; background-color:#0A0E1A; border-top:1px solid #232B3F;">
+              <p style="margin:0 0 6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#9A9FAC;">&copy; {{year}} {{institution_name}} &middot; Powered by FuhsoX</p>
+              <p style="margin:0 0 8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; letter-spacing:0.4px; color:#8A90A0;">Product of Revision Software Foundation</p>
+              <p style="margin:0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; color:#8A90A0;">You're receiving this because you're enrolled at {{institution_name}}.</p>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
 </body>
 </html>

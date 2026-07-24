@@ -1,57 +1,106 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="x-apple-disable-message-reformatting"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
   <title>Message from {{institution_name}}</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { margin:0; padding:20px 0; background:#f0f4f8; font-family:'Segoe UI', Arial, sans-serif; color:#1f2937; }
-    .container { max-width:600px; margin:0 auto; background:#ffffff; border-radius:14px; overflow:hidden; box-shadow:0 4px 24px rgba(0,0,0,0.08); }
-    .header { background:#0f2d5e; padding:28px 40px; display:flex; align-items:center; gap:16px; }
-    .header-text h1 { color:#ffffff; font-size:18px; font-weight:700; margin:0; }
-    .header-text p  { color:rgba(255,255,255,0.65); font-size:12px; margin:3px 0 0; }
-    .greeting { padding:32px 40px 8px; font-size:15px; color:#374151; }
-    .content { padding:8px 40px 32px; font-size:15px; color:#374151; line-height:1.7; }
-    /* Allow admin-supplied HTML to render naturally within this container */
-    .content h1, .content h2, .content h3 { color:#0f2d5e; margin:20px 0 10px; }
-    .content p  { margin:0 0 14px; }
-    .content a  { color:#1a56db; }
-    .content ul, .content ol { padding-left:20px; margin:0 0 14px; }
-    .content li { margin-bottom:6px; }
-    .content blockquote { border-left:4px solid #1a56db; margin:16px 0; padding:12px 20px; background:#f0f4ff; color:#374151; border-radius:0 6px 6px 0; }
-    .content img { max-width:100%; border-radius:8px; }
-    .content table { width:100%; border-collapse:collapse; margin-bottom:14px; }
-    .content table th { background:#0f2d5e; color:#fff; padding:8px 12px; text-align:left; font-size:13px; }
-    .content table td { padding:8px 12px; border-bottom:1px solid #e5e7eb; font-size:13px; }
-    .footer { background:#f4f6f9; padding:20px 40px; border-top:1px solid #e5e7eb; text-align:center; font-size:12px; color:#9ca3af; }
-    .footer a { color:#6b7280; text-decoration:none; }
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <!--[if !mso]><!-->
+  <style type="text/css">@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');</style>
+  <!--<![endif]-->
+  <style type="text/css">
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    body { margin:0 !important; padding:0 !important; width:100% !important; }
+    a { text-decoration:none; }
+
+    /* Admin-authored HTML lands in .content, so it can't be inlined — these
+       descendant rules are what keep it on-theme in clients that honour <style>. */
+    .content { font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8; }
+    .content h1, .content h2, .content h3 { margin:26px 0 12px; font-weight:800; letter-spacing:-0.3px; color:#FFFFFF; }
+    .content h1 { font-size:23px; line-height:31px; }
+    .content h2 { font-size:19px; line-height:27px; }
+    .content h3 { font-size:16px; line-height:24px; }
+    .content p { margin:0 0 16px; }
+    .content strong, .content b { color:#FFFFFF; font-weight:700; }
+    .content a { color:#00E5FF; text-decoration:underline; }
+    .content ul, .content ol { margin:0 0 16px; padding-left:22px; }
+    .content li { margin-bottom:8px; }
+    .content hr { border:0; border-top:1px solid #232B3F; margin:26px 0; }
+    .content blockquote { margin:20px 0; padding:14px 20px; background-color:#141A2B; border-left:3px solid #00E5FF; border-radius:0 12px 12px 0; color:#C7CCD8; }
+    .content img { max-width:100%; height:auto; border-radius:12px; }
+    .content table { width:100%; border-collapse:collapse; margin:0 0 16px; }
+    .content th { padding:10px 14px; text-align:left; font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:#060910; background-color:#00E5FF; }
+    .content td { padding:10px 14px; font-size:14px; color:#C7CCD8; border-bottom:1px solid #232B3F; }
+    .content code, .content pre { font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size:13px; color:#B4FF39; background-color:#141A2B; border-radius:6px; }
+    .content code { padding:2px 6px; }
+    .content pre { display:block; padding:16px 18px; overflow-x:auto; }
+
+    @media only screen and (max-width:620px) {
+      .card { width:100% !important; }
+      .wrap { padding:20px 12px !important; }
+      .px   { padding-left:24px !important; padding-right:24px !important; }
+      .content { font-size:15px !important; }
+      .content h1 { font-size:21px !important; line-height:29px !important; }
+    }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <div class="header-text">
-        <h1>{{institution_name}}</h1>
-        <p>Official Communication &mdash; Powered by FuhsoX</p>
-      </div>
-    </div>
+<body style="margin:0; padding:0; width:100%; background-color:#060910;">
 
-    <div class="greeting">
-      <p>Dear {{user_name}},</p>
-    </div>
-
-    <div class="content">
-      {{{html_body}}}
-    </div>
-
-    <div class="footer">
-      <p>
-        &copy; {{year}} {{institution_name}}. All rights reserved.<br/>
-        This is an official communication from your institution via FuhsoX.<br/>
-        <a href="#">Manage email preferences</a>
-      </p>
-    </div>
+  <div style="display:none; font-size:1px; color:#060910; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">
+    An official message from {{institution_name}}.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#060910" style="background-color:#060910;">
+    <tr>
+      <td class="wrap" align="center" style="padding:40px 16px; background-color:#060910; background-image:linear-gradient(180deg,#0A0E1A 0%,#0D1424 42%,#060910 100%);">
+
+        <table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#0D1424; border-radius:22px; overflow:hidden;">
+
+          <tr>
+            <td height="3" style="height:3px; line-height:3px; font-size:0; background-color:#00E5FF; background-image:linear-gradient(90deg,#00E5FF 0%,#C57CFF 55%,#FF3DDB 100%);">&nbsp;</td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:34px 40px 26px; background-color:#0A0E1A; border-bottom:1px solid #232B3F;">
+              <div style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:26px; font-weight:800; letter-spacing:-0.5px; color:#FFFFFF; mso-line-height-rule:exactly; line-height:32px;">Fuhso<span style="color:#00E5FF; text-shadow:0 0 18px rgba(0,229,255,0.7);">X</span></div>
+              <div style="margin-top:10px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase; color:#9A9FAC;">{{institution_name}} &middot; Official communication</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:36px 40px 0;">
+              <p style="margin:0; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">Dear <strong style="color:#FFFFFF; font-weight:700;">{{user_name}}</strong>,</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px content" style="padding:20px 40px 36px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:15px; line-height:26px; color:#C7CCD8;">
+              {{{html_body}}}
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" align="center" style="padding:26px 40px 32px; background-color:#0A0E1A; border-top:1px solid #232B3F;">
+              <p style="margin:0 0 6px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#9A9FAC;">&copy; {{year}} {{institution_name}}. All rights reserved.</p>
+              <p style="margin:0 0 8px; font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; letter-spacing:0.4px; color:#8A90A0;">Powered by FuhsoX &middot; Product of Revision Software Foundation</p>
+              <a href="#" style="font-family:'Manrope','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif; font-size:11px; line-height:18px; color:#8A90A0; text-decoration:underline;">Manage email preferences</a>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
 </body>
 </html>
