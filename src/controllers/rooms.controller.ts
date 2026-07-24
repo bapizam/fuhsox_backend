@@ -55,17 +55,21 @@ export const createRoom = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const getRooms = asyncHandler(async (req: Request, res: Response) => {
+  // Private rooms are now LISTED (they used to be hidden unless you were already a
+  // member, which made them unjoinable: the room screen has a passcode gate, but
+  // nothing ever routed you to it). They appear locked; the passcode — never the
+  // name — is what actually gates entry, and it stays server-side.
   const rooms = await prisma.studyRoom.findMany({
-    where: {
-      institution_id: req.institutionId,
-      OR: [
-        { is_private: false },
-        { participants: { some: { user_id: req.user.id } } },
-      ],
-    },
+    where: { institution_id: req.institutionId },
     include: {
       creator: {
         select: { id: true, full_name: true, avatar_url: true },
+      },
+      // Just the current user's row, so the directory can mark joined vs locked
+      // without leaking the whole participant list of a private room.
+      participants: {
+        where:  { user_id: req.user.id },
+        select: { id: true },
       },
       _count: {
         select: { participants: true },
@@ -75,7 +79,10 @@ export const getRooms = asyncHandler(async (req: Request, res: Response) => {
   });
 
   // Never ship private-room passcodes to every client that can see the room.
-  const safeRooms = rooms.map(({ passcode: _, ...room }) => room);
+  const safeRooms = rooms.map(({ passcode: _passcode, participants, ...room }) => ({
+    ...room,
+    is_member: participants.length > 0,
+  }));
 
   res.status(200).json(ok(safeRooms));
 });
