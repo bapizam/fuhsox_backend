@@ -3,7 +3,7 @@ import { AppError } from '@typings/models';
 import mongoose from 'mongoose';
 import { notificationService } from './notification.service';
 import { gamificationService } from './gamification.service';
-import { uploadAvatar, deleteFromS3, extractKeyFromUrl } from '@lib/s3';
+import { uploadAvatar, deleteFromS3, extractKeyFromUrl, isStoredObjectUrl } from '@lib/s3';
 import { del as redisDel, delByPattern } from '@lib/redis';
 import { REDIS_KEYS } from '@config/constants';
 import { watDaysBetween } from '@utils/xp';
@@ -596,8 +596,10 @@ export async function deleteAccount(userId: string): Promise<void> {
   }
 
   // Nulling avatar_url only ever dropped the POINTER; the object stayed public in
-  // the bucket, readable by anyone who had seen the URL.
-  if (user.avatar_url) {
+  // the bucket, readable by anyone who had seen the URL. Skip OAuth users whose
+  // avatar is a foreign URL (e.g. Google) we never stored — handing that to S3
+  // deletion only produces a SignatureDoesNotMatch error against a key we don't own.
+  if (user.avatar_url && isStoredObjectUrl(user.avatar_url)) {
     try {
       await deleteFromS3(extractKeyFromUrl(user.avatar_url));
     } catch (err) {

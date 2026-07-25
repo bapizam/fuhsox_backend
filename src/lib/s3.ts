@@ -125,13 +125,25 @@ export async function getPresignedUrl(
 
 // ─── Key Extractor ────────────────────────────────────────────────────────────
 
+const LEGACY_AWS_PREFIX = `https://${STORAGE_BUCKET}.s3.${STORAGE_REGION}.amazonaws.com/`;
+
 /**
  * Inverse of `publicUrlForKey`. Also strips the legacy AWS-shaped prefix so rows
  * written before a provider migration still resolve to a usable key.
  */
 export function extractKeyFromUrl(url: string): string {
-  const legacyAwsPrefix = `https://${STORAGE_BUCKET}.s3.${STORAGE_REGION}.amazonaws.com/`;
   return url
     .replace(`${PUBLIC_BASE_URL}/`, '')
-    .replace(legacyAwsPrefix, '');
+    .replace(LEGACY_AWS_PREFIX, '');
+}
+
+/**
+ * Whether `url` names an object in OUR bucket, as opposed to a foreign URL saved
+ * verbatim — e.g. the `lh3.googleusercontent.com` avatar of an OAuth user who
+ * never uploaded one. Only owned objects may be handed to `deleteFromS3`: a
+ * foreign URL is not a valid key, and most S3 providers reject it with a signing
+ * error (SignatureDoesNotMatch) rather than a harmless no-op.
+ */
+export function isStoredObjectUrl(url: string): boolean {
+  return url.startsWith(`${PUBLIC_BASE_URL}/`) || url.startsWith(LEGACY_AWS_PREFIX);
 }
