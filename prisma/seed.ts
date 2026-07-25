@@ -90,7 +90,7 @@ async function main() {
       email_domains:  ['fuhso.edu.ng', 'student.fuhso.edu.ng', 'gmail.com', 'outlook.com', 'yahoo.com', 'hotmail.com'],
       primary_color:  '#1a3c6e',
       timezone:       'Africa/Lagos',
-      ai_daily_limit: 50,
+      ai_daily_limit: 20,
     },
   });
 
