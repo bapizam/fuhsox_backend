@@ -1,56 +1,14 @@
-/**
- * prisma/seed.ts
- *
- * Base seed — creates only the foundational data the platform needs to run:
- *   - 1 Institution  (FUHSO)
- *   - 7 Badges
- *   - 1 Admin user
- *   - 20 Published questions across 5 subjects
- *
- * No student users, no events, no news articles, no sessions.
- * Add those manually or via the API after seeding.
- *
- * This script WIPES BOTH DATABASES before inserting — every Postgres table and
- * every Mongo collection. It is wired into `npm run db:seed`, which has
- * historically been chained into the Render build command, so the production
- * guard below is load-bearing. See the 2026-07-22 build log for what happens
- * without it.
- */
-
 import { PrismaClient } from '@prisma/client';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-// ════════════════════════════════════════════════════════════════════════════
-// GUARD
-// ════════════════════════════════════════════════════════════════════════════
-
-/**
- * Exits 0, not 1: the Render build command chains on `&&`, so a non-zero exit
- * would turn a correctly-skipped seed into a failed deploy.
- */
 function destructiveSeedIsAllowed(): boolean {
   if (process.env['ALLOW_DESTRUCTIVE_SEED'] === 'true') return true;
   return process.env['NODE_ENV'] !== 'production';
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// MONGO WIPE
-// ════════════════════════════════════════════════════════════════════════════
-
-/**
- * Empties every Mongo collection: posts, comments, direct messages, AI feedback,
- * generated questions, resource chunks, micro-lessons and study plans all live
- * here, and all of them key off Postgres user ids that STEP 1 deletes.
- *
- * Collections are enumerated from the live database rather than from the schema
- * modules, so collections written by earlier versions of the app are cleared too.
- *
- * They are emptied rather than dropped so their indexes survive; a dropped
- * collection loses its index definitions until the app next re-declares them.
- */
 async function wipeMongo(uri: string): Promise<number> {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 10_000 });
 
@@ -79,9 +37,6 @@ async function wipeMongo(uri: string): Promise<number> {
 async function main() {
   console.log('Seeding FuhsoX base data...\n');
 
-  // Checked before anything is deleted: a missing URI part-way through would
-  // leave Postgres wiped and Mongo full, which is worse than not starting. The
-  // app treats MONGODB_URI as required too (src/config/env.ts).
   const mongoUri = process.env['MONGODB_URI'];
   if (!mongoUri) {
     throw new Error(
@@ -90,10 +45,6 @@ async function main() {
         'pointing at users that no longer exist.',
     );
   }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // STEP 1 — WIPE (child → parent order)
-  // ══════════════════════════════════════════════════════════════════════════
 
   console.log('Clearing existing data...');
 
@@ -112,13 +63,9 @@ async function main() {
   await prisma.aIUsageLog.deleteMany({});
   await prisma.pDFParseJob.deleteMany({});
 
-  // study_rooms restricts on BOTH users (creator) and institutions, so leaving
-  // it out makes the two deletes below fail on any database that has a room.
   await prisma.studyRoomParticipant.deleteMany({});
   await prisma.studyRoom.deleteMany({});
 
-  // knowledge_components / kc_edges are institution-scoped by a plain column,
-  // not a foreign key, so nothing cascades to them.
   await prisma.kCEdge.deleteMany({});
   await prisma.knowledgeComponent.deleteMany({});
 
@@ -127,8 +74,6 @@ async function main() {
   await prisma.event.deleteMany({});
   await prisma.badge.deleteMany({});
 
-  // Removes device_push_tokens, learning_resources, syllabus_nodes,
-  // learning_objectives, mastery_attempts and exam_outcomes by cascade.
   await prisma.user.deleteMany({});
   await prisma.institution.deleteMany({});
 
@@ -138,15 +83,11 @@ async function main() {
   console.log(`  Mongo: ${mongoDocs} document(s) cleared`);
   console.log('  Cleared\n');
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // STEP 2 — INSTITUTION
-  // ══════════════════════════════════════════════════════════════════════════
-
   const fuhso = await prisma.institution.create({
     data: {
       name:           'Federal University of Health Sciences, Otukpo',
       slug:           'fuhso',
-      email_domains:  ['fuhso.edu.ng', 'student.fuhso.edu.ng'],
+      email_domains:  ['fuhso.edu.ng', 'student.fuhso.edu.ng', 'gmail.com', 'outlook.com', 'yahoo.com', 'hotmail.com'],
       primary_color:  '#1a3c6e',
       timezone:       'Africa/Lagos',
       ai_daily_limit: 50,
@@ -154,10 +95,6 @@ async function main() {
   });
 
   console.log(`Institution: ${fuhso.name}`);
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // STEP 3 — BADGES
-  // ══════════════════════════════════════════════════════════════════════════
 
   await prisma.badge.createMany({
     data: [
