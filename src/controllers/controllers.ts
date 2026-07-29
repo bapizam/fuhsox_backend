@@ -154,6 +154,19 @@ export const getQuestions = asyncHandler(async (req: Request, res: Response) => 
   res.status(200).json(ok(result));
 });
 
+const questionFacetsSchema = z.object({
+  faculty:    z.string().optional(),
+  department: z.string().optional(),
+});
+
+// Distinct courses/years/faculties/departments so the browser can offer real
+// filter options (cascading by faculty → department).
+export const getQuestionFacets = asyncHandler(async (req: Request, res: Response) => {
+  const filter = questionFacetsSchema.parse(req.query);
+  const result = await questionService.getQuestionFacets(req.institutionId, filter);
+  res.status(200).json(ok(result));
+});
+
 export const getBookmarks = asyncHandler(async (req: Request, res: Response) => {
   const { page, limit } = z.object({ page: z.coerce.number().default(1), limit: z.coerce.number().max(50).default(12) }).parse(req.query);
   const result = await questionService.getUserBookmarks(req.user.id, req.institutionId, page, limit);
@@ -306,17 +319,19 @@ export const generateAIQuestions = asyncHandler(async (req: Request, res: Respon
 export const generateStudyPlan = asyncHandler(async (req: Request, res: Response) => {
   const schema = z.object({
     subjects:    z.array(z.string().min(1)).min(1).max(10),
-    exam_date:   z.string().datetime(),
+    // Optional: a "just study" (ongoing) plan has no exam to count down from.
+    exam_date:   z.string().datetime().optional(),
     daily_hours: z.number().positive().max(16),
   });
 
   const { subjects, exam_date, daily_hours } = schema.parse(req.body);
+  const examDate = exam_date ? new Date(exam_date) : null;
 
   const plan = await aiService.generateStudyPlan({
     userId:        req.user.id,
     institutionId: req.institutionId,
     subjects,
-    examDate:      new Date(exam_date),
+    examDate,
     dailyHours:    daily_hours,
   });
 
@@ -327,7 +342,7 @@ export const generateStudyPlan = asyncHandler(async (req: Request, res: Response
       user_id:        req.user.id,
       institution_id: req.institutionId,
       subjects,
-      exam_date:      new Date(exam_date),
+      exam_date:      examDate,
       daily_hours,
       ...(plan),
     },

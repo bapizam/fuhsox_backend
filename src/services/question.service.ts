@@ -46,6 +46,54 @@ function buildStudentWhereClause(
   };
 }
 
+// ─── Facets (filter options for the student browser) ───────────────────────────
+
+export interface FacetFilter {
+  faculty?:    string;
+  department?: string;
+}
+
+/**
+ * Distinct filter values across an institution's PUBLISHED bank, so the browser
+ * can offer real courses/years to pick from instead of a blind text box. Cascades:
+ * `faculties` is always the full list (you can switch faculty); `departments`
+ * narrows to the chosen faculty; `courses` and `years` narrow to faculty +
+ * department. Read-only — no migration.
+ */
+export async function getQuestionFacets(institutionId: string, filter: FacetFilter) {
+  const published = { institution_id: institutionId, status: 'published' as const };
+  const ci = (v: string) => ({ equals: v, mode: 'insensitive' as const });
+
+  const facultyWhere = { ...published, ...(filter.faculty && { faculty: ci(filter.faculty) }) };
+  const scopedWhere = { ...facultyWhere, ...(filter.department && { department: ci(filter.department) }) };
+
+  const [faculties, departments, courses, years] = await Promise.all([
+    prisma.question.findMany({
+      where: published, distinct: ['faculty'],
+      select: { faculty: true }, orderBy: { faculty: 'asc' },
+    }),
+    prisma.question.findMany({
+      where: facultyWhere, distinct: ['department'],
+      select: { department: true }, orderBy: { department: 'asc' },
+    }),
+    prisma.question.findMany({
+      where: scopedWhere, distinct: ['course_code'],
+      select: { course_code: true, course_name: true }, orderBy: { course_code: 'asc' },
+    }),
+    prisma.question.findMany({
+      where: scopedWhere, distinct: ['year'],
+      select: { year: true }, orderBy: { year: 'desc' },
+    }),
+  ]);
+
+  return {
+    faculties:   faculties.map((f) => f.faculty),
+    departments: departments.map((d) => d.department).filter((d): d is string => d !== null),
+    courses:     courses.map((c) => ({ course_code: c.course_code, course_name: c.course_name })),
+    years:       years.map((y) => y.year),
+  };
+}
+
 // ─── Get Questions (Student) ───────────────────────────────────────────────────
 
 export async function getPublishedQuestions(
@@ -276,6 +324,7 @@ export async function updateQuestionStatus(
 
 export const questionService = {
   getPublishedQuestions,
+  getQuestionFacets,
   getUserBookmarks,
   toggleBookmark,
   getAdminQuestions,

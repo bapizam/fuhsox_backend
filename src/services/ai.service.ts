@@ -312,7 +312,8 @@ export async function generateStudyPlan(params: {
   userId:        string;
   institutionId: string;
   subjects:      string[];
-  examDate:      Date;
+  /** Null for an ongoing "just study" plan with no exam deadline. */
+  examDate:      Date | null;
   dailyHours:    number;
 }): Promise<Record<string, unknown>> {
   // Same daily budget as question generation (plan generation used to be
@@ -536,21 +537,27 @@ The student got this wrong. Please provide helpful, encouraging feedback explain
 }
 
 function buildStudyPlanPrompt(
-  params: { subjects: string[]; examDate: Date; dailyHours: number },
+  params: { subjects: string[]; examDate: Date | null; dailyHours: number },
   grounding: string,
 ): string {
-  const today     = new Date();
-  const weeksLeft = Math.max(1, Math.ceil(
-    (params.examDate.getTime() - today.getTime()) / (7 * 86400000),
-  ));
+  const today = new Date();
+  // "Just study" (no exam) → a steady rolling plan the student can repeat, rather
+  // than a countdown to a deadline.
+  const ONGOING_WEEKS = 4;
+  const weeksLeft = params.examDate
+    ? Math.max(1, Math.ceil((params.examDate.getTime() - today.getTime()) / (7 * 86400000)))
+    : ONGOING_WEEKS;
+
+  const deadlineLine = params.examDate
+    ? `Exam date: ${params.examDate.toISOString().split('T')[0]}\nWeeks available: ${weeksLeft}`
+    : `No exam deadline — this is an ongoing "just study" plan. Build a balanced ${ONGOING_WEEKS}-week rotation the student can repeat, with steady, sustainable coverage rather than a countdown.`;
 
   return `Create a ${weeksLeft}-week study plan for this student (their discipline is in the system role above).
 
 Subjects: ${params.subjects.join(', ')}
-Exam date: ${params.examDate.toISOString().split('T')[0]}
+${deadlineLine}
 Available study hours per day: ${params.dailyHours}
 Starting date: ${today.toISOString().split('T')[0]}
-Weeks available: ${weeksLeft}
 ${grounding}
 
 Create a realistic, balanced plan that ${

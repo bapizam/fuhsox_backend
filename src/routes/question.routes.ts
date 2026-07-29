@@ -3,6 +3,7 @@ import authenticate from '@middleware/authenticate';
 import scopeToInstitution from '@middleware/institutionScope';
 import {
   getQuestions,
+  getQuestionFacets,
   getBookmarks,
   toggleBookmark,
 } from '@controllers/controllers';
@@ -13,6 +14,9 @@ router.use(authenticate, scopeToInstitution);
 
 // GET  /api/v1/questions            — browse published questions with filters
 router.get('/', getQuestions);
+
+// GET  /api/v1/questions/facets     — distinct courses/years/faculties/departments
+router.get('/facets', getQuestionFacets);
 
 // GET  /api/v1/questions/bookmarks  — get my bookmarked questions
 router.get('/bookmarks', getBookmarks);
