@@ -8,6 +8,7 @@ import {
   getMyStudyPlan,
   updateStudyPlanTask,
   getMyAIFeedback,
+  getAIHistory,
   flagAIQuestion,
 } from '@controllers/controllers';
 
@@ -32,6 +33,12 @@ router.patch('/plan/me/task', updateStudyPlanTask);
 
 // GET  /api/v1/ai/feedback/me           — AI feedback history for current user
 router.get('/feedback/me', getMyAIFeedback);
+
+// GET  /api/v1/ai/history               — unified AI timeline: forged questions,
+//      tutor feedback, mastery attempts and plan generations, newest first.
+//      ?kind=all|question|feedback|mastery|plan &page= &limit= &search=
+//      ZERO AI calls — pure reads.
+router.get('/history', getAIHistory);
 
 // POST /api/v1/ai/questions/:id/flag    — flag a generated question as low-quality
 router.post('/questions/:id/flag', flagAIQuestion);

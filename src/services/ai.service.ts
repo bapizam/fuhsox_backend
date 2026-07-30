@@ -6,6 +6,14 @@ import { REDIS_KEYS } from '@config/constants';
 import { incrWithExpiry, getCount, getEndOfDayTTL, getTodayWAT } from '@lib/redis';
 import { AppError, type GeneratedQuestion, type AIGenerationResult } from '@typings/models';
 import { partitionValidItems, type RawItem } from '@utils/item-validation';
+import {
+  describeChoice,
+  findOption,
+  parseOptions,
+  renderOptions,
+  shuffleOptions,
+  type McqOption,
+} from '@utils/mcq';
 import { resolveDiscipline } from '@config/academic';
 import { effectiveState, revisionPriority, type ObjectiveSnapshot } from '@utils/mastery';
 import logger from '@lib/logger';
@@ -145,20 +153,30 @@ export async function generateQuestions(params: {
     },
   });
 
-  // Save to MongoDB AIQuestion collection
+  // Save to MongoDB AIQuestion collection.
+  //
+  // Options are shuffled ON THE WAY IN, once. Generators put the correct option
+  // first the overwhelming majority of the time, so before this the answer was
+  // almost always "A" and students could score by picking A blind. Shuffling at
+  // persist time (rather than per render) keeps the stored `correct_answer` and
+  // every recorded `chosen_answer` referring to the same letters forever —
+  // shuffling per render would invalidate the answers already on file.
   const savedQuestions = await AIQuestion.insertMany(
-    questions.map((q) => ({
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      topic:          params.topic,
-      question_type:  params.question_type,
-      question_text:  q.question_text,
-      options:        q.options,
-      correct_answer: q.correct_answer,
-      explanation:    q.explanation,
-      difficulty:     params.difficulty,
-      quality_flag:   q.quality_flag ?? 'good',
-    })),
+    questions.map((q) => {
+      const positioned = shuffleOptions(parseOptions(q.options), q.correct_answer);
+      return {
+        user_id:        params.userId,
+        institution_id: params.institutionId,
+        topic:          params.topic,
+        question_type:  params.question_type,
+        question_text:  q.question_text,
+        options:        positioned.options,
+        correct_answer: positioned.correct_answer,
+        explanation:    q.explanation,
+        difficulty:     params.difficulty,
+        quality_flag:   q.quality_flag ?? 'good',
+      };
+    }),
   );
 
   const newCount  = currentUsage + 1;
@@ -195,6 +213,12 @@ export async function streamAnswerFeedback(
       explanation?:   string;
       course_code:    string;
       topic:          string;
+      /**
+       * The MCQ choices. Without these the prompt can only name letters, and the
+       * tutor cannot say why the option the student picked is wrong — see
+       * `buildFeedbackPrompt`.
+       */
+      options?:       McqOption[];
     };
     chosenAnswer:  string;
     userId:        string;
@@ -258,6 +282,12 @@ export async function streamAnswerFeedback(
       topic:          params.question.topic,
       chosen_answer:  params.chosenAnswer,
       correct_answer: params.question.correct_answer,
+      // Resolved at write time so the history screen can render a feedback
+      // record standalone, long after the question may have been edited.
+      options:             params.question.options,
+      chosen_answer_text:  findOption(params.chosenAnswer, params.question.options)?.text,
+      correct_answer_text: findOption(params.question.correct_answer, params.question.options)?.text,
+      misconception:       findOption(params.chosenAnswer, params.question.options)?.misconception,
       ai_explanation: fullText,
       model_used:     result.model,
       tokens_used:    result.input_tokens + result.output_tokens,
@@ -523,17 +553,44 @@ Requirements:
 Return valid JSON matching the specified schema. Count must be exactly ${params.count}.`;
 }
 
+/**
+ * Build the tutor prompt.
+ *
+ * The option TEXT is load-bearing. This used to send `STUDENT'S ANSWER: A` and
+ * `CORRECT ANSWER: C` — bare letters. The model had no idea what A or C said, so
+ * "address their specific misconception" was impossible and it wrote generic
+ * encouragement instead. Now it sees the full option list and both choices
+ * resolved to their text, plus the distractor's tagged misconception when the
+ * generator recorded one.
+ */
 function buildFeedbackPrompt(
-  question: { question_text: string; correct_answer: string; explanation?: string },
+  question: {
+    question_text: string;
+    correct_answer: string;
+    explanation?: string;
+    options?: McqOption[];
+  },
   chosenAnswer: string,
 ): string {
-  return `QUESTION: ${question.question_text}
+  const optionBlock = renderOptions(question.options);
+  const chosen = findOption(chosenAnswer, question.options);
 
-STUDENT'S ANSWER: ${chosenAnswer}
-CORRECT ANSWER: ${question.correct_answer}
-${question.explanation ? `OFFICIAL EXPLANATION: ${question.explanation}` : ''}
-
-The student got this wrong. Please provide helpful, encouraging feedback explaining the correct answer and addressing their specific misconception.`;
+  return [
+    `QUESTION: ${question.question_text}`,
+    optionBlock ? `\nOPTIONS:\n${optionBlock}` : '',
+    `\nSTUDENT'S ANSWER: ${describeChoice(chosenAnswer, question.options)}`,
+    `CORRECT ANSWER: ${describeChoice(question.correct_answer, question.options)}`,
+    // The generator tags each distractor with the error it represents. When the
+    // student picked a tagged one we know precisely what they got wrong, so say
+    // so rather than making the model infer it.
+    chosen?.misconception
+      ? `\nThe option they chose is a known distractor for this misconception: "${chosen.misconception}". Address that misconception directly.`
+      : '',
+    question.explanation ? `\nOFFICIAL EXPLANATION: ${question.explanation}` : '',
+    `\nThe student got this wrong. Explain why THEIR chosen option is wrong (quote or paraphrase it so they know you read it) and why the correct option is right. Be encouraging and specific — never generic.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function buildStudyPlanPrompt(
@@ -1170,7 +1227,20 @@ export async function generateMasteryQuestions(params: {
     throw new AppError(500, 'INTERNAL_ERROR', 'AI returned no usable questions for this objective');
   }
 
-  const saved = await AIQuestion.insertMany(rows);
+  // Randomise the correct option's position before the pool is cached. Mastery
+  // pools are cached for the objective's lifetime, so an un-shuffled pool would
+  // keep the answer at "A" for every repeat attempt. Distractor `misconception`
+  // tags travel with their text, which the Phase-1 diagnosis depends on.
+  const positioned = rows.map((row) => {
+    const shuffledRow = shuffleOptions(row.options, row.correct_answer);
+    return {
+      ...row,
+      options:        shuffledRow.options ?? row.options,
+      correct_answer: shuffledRow.correct_answer,
+    };
+  });
+
+  const saved = await AIQuestion.insertMany(positioned);
 
   logger.info(
     { objectiveId: params.objectiveId, count: saved.length, dropped: rejected.length },

@@ -137,6 +137,21 @@ export interface IAIFeedback extends Document {
   topic?: string;
   chosen_answer?: string;
   correct_answer?: string;
+  /**
+   * The option list as it was shown, plus both answers resolved to their TEXT.
+   *
+   * `chosen_answer` / `correct_answer` hold bare MCQ letters, which makes a
+   * feedback record unreadable on its own — "you chose A" means nothing months
+   * later, and the option order is shuffled per question anyway. Stored at write
+   * time because the source question can be edited or deleted afterwards; the
+   * history screen renders these directly. Absent on legacy rows and on
+   * free-response items (where `chosen_answer` is already the text).
+   */
+  options?: Array<{ key: string; text: string; misconception?: string }>;
+  chosen_answer_text?: string;
+  correct_answer_text?: string;
+  /** The misconception tagged on the distractor they picked, when there was one. */
+  misconception?: string;
   ai_explanation?: string;
   model_used?: string;
   tokens_used?: number;
@@ -146,18 +161,22 @@ export interface IAIFeedback extends Document {
 
 const AIFeedbackSchema = new Schema<IAIFeedback>(
   {
-    user_id:         { type: String, required: true, index: true },
-    institution_id:  { type: String, required: true },
-    session_id:      { type: String },
-    question_id:     { type: String },
-    question_text:   { type: String },
-    course_code:     { type: String },
-    topic:           { type: String },
-    chosen_answer:   { type: String },
-    correct_answer:  { type: String },
-    ai_explanation:  { type: String },
-    model_used:      { type: String },
-    tokens_used:     { type: Number },
+    user_id:             { type: String, required: true, index: true },
+    institution_id:      { type: String, required: true },
+    session_id:          { type: String },
+    question_id:         { type: String },
+    question_text:       { type: String },
+    course_code:         { type: String },
+    topic:               { type: String },
+    chosen_answer:       { type: String },
+    correct_answer:      { type: String },
+    options:             [{ key: String, text: String, misconception: String }],
+    chosen_answer_text:  { type: String },
+    correct_answer_text: { type: String },
+    misconception:       { type: String },
+    ai_explanation:      { type: String },
+    model_used:          { type: String },
+    tokens_used:         { type: Number },
   },
   { timestamps: true },
 );
@@ -367,6 +386,34 @@ export interface IStudyPlan extends Document {
   updatedAt: Date;
 }
 
+/**
+ * An immutable snapshot of one study-plan generation.
+ *
+ * `StudyPlan` is upserted per user (`user_id` is `unique`), so regenerating
+ * overwrites the previous plan and its history was simply lost — the student had
+ * no way to see what the planner told them last week, or that it had changed. A
+ * separate append-only collection keeps the live plan's single-document read path
+ * exactly as it was while making the history available.
+ *
+ * Snapshots are never edited: task completion is written to `StudyPlan` only, so a
+ * version records what the AI produced, not what the student then did with it.
+ */
+export interface IStudyPlanVersion extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  institution_id: string;
+  subjects: string[];
+  exam_date?: Date;
+  daily_hours?: number;
+  weeks: IStudyPlanWeek[];
+  milestones: string[];
+  /** Denormalised so the history list needs no per-row aggregation. */
+  total_tasks: number;
+  total_weeks: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 const StudyPlanSchema = new Schema<IStudyPlan>(
   {
     user_id:        { type: String, required: true, unique: true },
@@ -401,3 +448,49 @@ const StudyPlanSchema = new Schema<IStudyPlan>(
 );
 
 export const StudyPlan = model<IStudyPlan>('StudyPlan', StudyPlanSchema);
+
+/**
+ * Append-only plan snapshots. Shares `StudyPlanSchema`'s nested shape but WITHOUT
+ * the `unique` constraint on `user_id`, which is the whole point.
+ */
+const StudyPlanVersionSchema = new Schema<IStudyPlanVersion>(
+  {
+    user_id:        { type: String, required: true, index: true },
+    institution_id: { type: String, required: true },
+    subjects:       [String],
+    exam_date:      { type: Date },
+    daily_hours:    { type: Number },
+    weeks: [
+      {
+        week_number: Number,
+        days: [
+          {
+            day:  String,
+            date: String,
+            tasks: [
+              {
+                subject:                  String,
+                topic:                    String,
+                duration_mins:            Number,
+                activity_type:            String,
+                recommended_question_set: String,
+                completed:                { type: Boolean, default: false },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    milestones:  [String],
+    total_tasks: { type: Number, default: 0 },
+    total_weeks: { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+
+StudyPlanVersionSchema.index({ user_id: 1, createdAt: -1 });
+
+export const StudyPlanVersion = model<IStudyPlanVersion>(
+  'StudyPlanVersion',
+  StudyPlanVersionSchema,
+);

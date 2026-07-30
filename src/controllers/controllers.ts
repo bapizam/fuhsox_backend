@@ -5,6 +5,7 @@ import { userService } from '@services/user.service';
 import { questionService } from '@services/question.service';
 import { sessionService } from '@services/session.service';
 import { aiService } from '@services/ai.service';
+import { aiHistoryService } from '@services/ai-history.service';
 import { feedService } from '@services/feed.service';
 import { notificationService } from '@services/notification.service';
 import { gamificationService } from '@services/gamification.service';
@@ -14,7 +15,8 @@ import { AppError } from '@typings/models';
 import { UPLOAD, REDIS_KEYS, TTL } from '@config/constants';
 import { get as redisGet, set as redisSet, getCount, getTodayWAT, getEndOfDayTTL } from '@lib/redis';
 import prisma from '@config/database';
-import { Message, StudyPlan } from '../../mongo/schemas';
+import logger from '@lib/logger';
+import { Message, StudyPlan, StudyPlanVersion } from '../../mongo/schemas';
 
 // ─── Multer for avatar uploads ─────────────────────────────────────────────────
 
@@ -335,21 +337,79 @@ export const generateStudyPlan = asyncHandler(async (req: Request, res: Response
     dailyHours:    daily_hours,
   });
 
-  // Save/update study plan in MongoDB
-  await StudyPlan.findOneAndUpdate(
-    { user_id: req.user.id },
-    {
-      user_id:        req.user.id,
-      institution_id: req.institutionId,
-      subjects,
-      exam_date:      examDate,
-      daily_hours,
-      ...(plan),
-    },
-    { upsert: true, new: true },
-  );
+  const planFields = {
+    user_id:        req.user.id,
+    institution_id: req.institutionId,
+    subjects,
+    exam_date:      examDate,
+    daily_hours,
+    ...(plan),
+  };
+
+  // Save/update the LIVE study plan in MongoDB (one document per user).
+  await StudyPlan.findOneAndUpdate({ user_id: req.user.id }, planFields, {
+    upsert: true,
+    new:    true,
+  });
+
+  // …and append an immutable snapshot for the history timeline. This upsert
+  // overwrites the previous plan, so without the snapshot the student's earlier
+  // plans were simply destroyed. Best-effort: the history is a nicety and must
+  // never fail a generation the student has already paid an AI credit for.
+  try {
+    // Read off `plan` (the AI payload), not `planFields` — spreading a
+    // `Record<string, unknown>` adds no known keys to the object's type.
+    const weeks = Array.isArray(plan['weeks']) ? (plan['weeks'] as unknown[]) : [];
+    await StudyPlanVersion.create({
+      ...planFields,
+      total_weeks: weeks.length,
+      total_tasks: countPlanTasks(weeks),
+    });
+  } catch (err) {
+    logger.warn({ err, userId: req.user.id }, 'Failed to snapshot study plan version');
+  }
 
   res.status(200).json(ok(plan));
+});
+
+/** Total tasks across a plan's weeks/days, defensively — the plan is AI-shaped. */
+function countPlanTasks(weeks: unknown[]): number {
+  let count = 0;
+  for (const week of weeks) {
+    const days = (week as { days?: unknown[] })?.days;
+    if (!Array.isArray(days)) continue;
+    for (const day of days) {
+      const tasks = (day as { tasks?: unknown[] })?.tasks;
+      if (Array.isArray(tasks)) count += tasks.length;
+    }
+  }
+  return count;
+}
+
+/**
+ * GET /ai/history — the unified AI timeline (forged questions, tutor feedback,
+ * mastery attempts, plan generations). ZERO AI calls. See `ai-history.service`.
+ */
+export const getAIHistory = asyncHandler(async (req: Request, res: Response) => {
+  const { page, limit, kind, search } = z
+    .object({
+      page:   z.coerce.number().int().positive().default(1),
+      limit:  z.coerce.number().int().positive().max(50).default(20),
+      kind:   z.enum(['all', 'question', 'feedback', 'mastery', 'plan']).default('all'),
+      search: z.string().trim().max(120).optional(),
+    })
+    .parse(req.query);
+
+  const result = await aiHistoryService.getAIHistory({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    page,
+    limit,
+    kind,
+    ...(search ? { search } : {}),
+  });
+
+  res.status(200).json(ok(result));
 });
 
 export const getAIUsageToday = asyncHandler(async (req: Request, res: Response) => {

@@ -2,6 +2,7 @@ import prisma from '@config/database';
 import { AIQuestion, AIFeedback } from '../../mongo/schemas';
 import { AppError } from '@typings/models';
 import { calculateScorePercent } from '@utils/xp';
+import { parseOptions, type McqOption } from '@utils/mcq';
 import { gamificationService } from './gamification.service';
 import logger from '@lib/logger';
 import { getIO } from '@lib/socket-ref';
@@ -217,6 +218,12 @@ export async function submitAnswer(params: {
     /** Non-MCQ items need the AI grader, not string equality (Phase 2). */
     question_type?: string;
     rubric?:        string;
+    /**
+     * The MCQ choices. Carried so the tutor prompt can name what the student
+     * actually picked — it used to see only the letter "A" and was asked to
+     * explain a misconception it had no way to see.
+     */
+    options?:       McqOption[];
   } | null = null;
   let questionPayload: unknown = question;
 
@@ -228,6 +235,7 @@ export async function submitAnswer(params: {
       course_code:    question.course_code,
       topic:          question.topic,
       question_type:  question.question_type,
+      options:        parseOptions(question.options),
     };
   } else if (/^[0-9a-fA-F]{24}$/.test(questionId)) {
     const aiQuestion = await AIQuestion.findOne({ _id: questionId, user_id: userId }).lean();
@@ -240,6 +248,7 @@ export async function submitAnswer(params: {
         topic:          aiQuestion.topic,
         question_type:  aiQuestion.question_type,
         rubric:         aiQuestion.rubric ?? undefined,
+        options:        parseOptions(aiQuestion.options),
       };
       questionPayload = aiQuestion;
     }
