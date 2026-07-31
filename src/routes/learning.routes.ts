@@ -14,6 +14,11 @@ import {
   startMasteryCheck,
   startTopicMasteryCheck,
   completeMasteryCheck,
+  startNodeMasteryCheck,
+  getResourceReadiness,
+  startPlacementCheck,
+  completePlacementCheck,
+  getPlacement,
   getLearnerModel,
   getRemediation,
   recordExamOutcome,
@@ -66,8 +71,35 @@ router.post('/objectives/:id/mastery-check', startMasteryCheck);
 //      Upserts a topic objective, then behaves exactly like the route above. This
 //      is the plan's evidence gate that replaced the "I've studied" checkbox.
 router.post('/topic-check', startTopicMasteryCheck);
+// POST /api/v1/learning/node-check — the PER-RESOURCE plan's evidence gate.
+//      Takes a real `node_id`, so the objective it checks always carries a
+//      resource_id and its questions are RAG-grounded in the student's own PDF.
+//      `topic-check` above cannot promise that: it string-matches a free-text
+//      topic and, on a miss, creates an orphan objective whose questions come
+//      from the model's world knowledge instead. ONE AI call the first time a
+//      chapter is checked, none afterwards.
+router.post('/node-check', startNodeMasteryCheck);
 // POST /api/v1/learning/objectives/:id/mastery-check/complete — score + advance.
 router.post('/objectives/:id/mastery-check/complete', completeMasteryCheck);
+
+// ─── Placement (cold start for the single-subject plan) ───────────────────────
+// The measurement a study plan is ordered by. One item per sampled chapter, in
+// ONE AI call — deliberately cheap and deliberately weak, and NOT evidence for
+// the learner model (see services/placement.service.ts for why).
+// POST /api/v1/learning/placement — start. 422 when the resource has no outline.
+router.post('/placement', startPlacementCheck);
+// POST /api/v1/learning/placement/complete — record answers. ZERO AI calls.
+router.post('/placement/complete', completePlacementCheck);
+// GET  /api/v1/learning/placement/:id — standing placement for a resource id.
+router.get('/placement/:id', getPlacement);
+
+// GET /api/v1/learning/resources/:id/readiness — readiness for ONE resource plus
+//     a per-chapter breakdown. `GET /learning/me` computes its headline number
+//     across EVERY subject the student owns, so it can answer "how ready am I
+//     overall" but never "how ready am I for this exam". Same pure functions,
+//     scoped input. Still an estimate — render `readiness_band` beside it.
+//     ZERO AI calls.
+router.get('/resources/:id/readiness', getResourceReadiness);
 
 // POST /api/v1/learning/objectives/:id/remediation — teach what was missed, then
 //      retest it. ONE AI call on a cache miss, zero on a repeat failure. Returns

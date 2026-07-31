@@ -268,6 +268,10 @@ enum SessionMode {
   // machinery (grading, offline queue, XP, results screen) rather than a parallel
   // assessment engine; `MasteryAttempt.session_id` links back to the attempt.
   mastery_check
+  // One-off cold-start diagnostic across a resource's chapters, taken BEFORE a
+  // study plan is generated. Deliberately NOT evidence for the learner model —
+  // see `ChapterPlacement`.
+  placement
 }
 
 model SessionAnswer {
@@ -655,6 +659,10 @@ model LearningResource {
   course_code    String?
   parse_status   ParseStatus  @default(processing)
   parse_error    String?
+  /// Pages in the uploaded PDF. Set during extraction; null for a resource with
+  /// no file, or one ingested before page-aware extraction existed. It is what
+  /// closes the LAST chapter's page range, which otherwise has no upper bound.
+  page_count     Int?
   created_at     DateTime     @default(now())
   updated_at     DateTime     @updatedAt
 
@@ -684,10 +692,40 @@ model SyllabusNode {
   parent     SyllabusNode?       @relation("NodeChildren", fields: [parent_id], references: [id], onDelete: Cascade)
   children   SyllabusNode[]      @relation("NodeChildren")
   objectives LearningObjective[]
+  placements ChapterPlacement[]
 
   @@index([resource_id, ordinal])
   @@index([parent_id])
   @@map("syllabus_nodes")
+}
+
+/// A single placement answer for one chapter — the cold-start signal a study plan
+/// is ordered by.
+///
+/// **This is deliberately NOT part of the learner model.** It is ONE item per
+/// chapter, which is far too thin to be mastery evidence: writing it into
+/// `LearningObjective.mastery_score` or `MasteryAttempt` would feed
+/// `examReadiness` and the BKT graph a 1-item estimate and quietly corrupt both.
+/// It exists only to answer "where should this student start", and the UI labels
+/// it as a rough starting point. Real evidence still comes from mastery checks.
+model ChapterPlacement {
+  id          String   @id @default(uuid())
+  user_id     String
+  resource_id String
+  node_id     String
+  /// The placement QuizSession this answer came from.
+  session_id  String
+  correct     Boolean
+  /// Self-rated 1-5, when the item carried a confidence prompt.
+  confidence  Int?
+  created_at  DateTime @default(now())
+
+  node SyllabusNode @relation(fields: [node_id], references: [id], onDelete: Cascade)
+
+  /// One standing placement per chapter — retaking replaces the old answer.
+  @@unique([user_id, node_id])
+  @@index([user_id, resource_id])
+  @@map("chapter_placements")
 }
 
 /// The unit of progress. Replaces "topic completed" with something assessable.
@@ -894,6 +932,19 @@ model ExamOutcome {
   /// "what did we predict?" months on would otherwise give a different answer than
   /// the one that was actually shown to the student.
   predicted_readiness Float?
+  /// The same snapshot scoped to THIS exam's subject (single-subject plan, Phase 4).
+  ///
+  /// `predicted_readiness` above is computed across every objective the student
+  /// owns, in every subject — so calibration has been comparing a whole-portfolio
+  /// estimate against a single-subject grade. This is the number that should have
+  /// been stored, but it is added ALONGSIDE rather than replacing: rewriting the
+  /// old column would change the meaning of rows already collected, and
+  /// calibration deliberately still reads the old one so its metric does not shift
+  /// mid-dataset. Switch it over once enough rows carry this field — calibration
+  /// already refuses to fit below n=30, so it waits on its own.
+  ///
+  /// Null when the student has no objectives in that subject.
+  predicted_subject_readiness Float?
 
   created_at DateTime @default(now())
 

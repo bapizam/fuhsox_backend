@@ -1,5 +1,21 @@
 import { XP } from '@config/constants';
-import type { SessionAnswer } from '@typings/models';
+import type { SessionAnswer, SessionMode } from '@typings/models';
+
+/**
+ * Session modes that are measurements rather than achievements, and so pay no
+ * XP, advance no streak, and count toward no badge.
+ *
+ * A placement check is designed to be partly failed — that is how it finds the
+ * gaps a study plan is built around. Rewarding it would pay a student for being
+ * assessed rather than for learning, let the diagnostic be farmed instead of
+ * studied, and (via the streak) claim they had studied on a day they had not.
+ */
+const REWARDLESS_MODES: readonly SessionMode[] = ['placement'];
+
+/** Whether a finished session in this mode should pay out at all. */
+export function earnsRewards(mode: SessionMode): boolean {
+  return !REWARDLESS_MODES.includes(mode);
+}
 
 /**
  * Calculate XP earned from a completed quiz session.

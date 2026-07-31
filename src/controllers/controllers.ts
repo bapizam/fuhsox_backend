@@ -9,6 +9,7 @@ import { aiHistoryService } from '@services/ai-history.service';
 import { feedService } from '@services/feed.service';
 import { notificationService } from '@services/notification.service';
 import { gamificationService } from '@services/gamification.service';
+import * as subjectPlanService from '@services/subject-plan.service';
 import { ok, fail } from '@utils/response';
 import asyncHandler from '@middleware/asyncHandler';
 import { AppError } from '@typings/models';
@@ -879,6 +880,73 @@ export const getEvents = asyncHandler(async (req: Request, res: Response) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // ADDITIONAL AI CONTROLLERS
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ─── Per-resource study plan (single-subject plan, Phase 2) ───────────────────
+
+/**
+ * Generate a plan anchored to ONE uploaded resource. Costs ONE AI call (a second
+ * only if the first produced nothing usable). Regenerating replaces that
+ * resource's plan and its check-offs; other resources' plans are untouched.
+ */
+export const generateSubjectPlan = asyncHandler(async (req: Request, res: Response) => {
+  const schema = z.object({
+    resource_id: z.string().uuid(),
+    exam_date:   z.string().datetime().optional(),
+    daily_hours: z.number().positive().max(16),
+  }).strict();
+
+  const body = schema.parse(req.body);
+
+  const plan = await subjectPlanService.generateSubjectPlan({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    resourceId:    body.resource_id,
+    examDate:      body.exam_date ? new Date(body.exam_date) : null,
+    dailyHours:    body.daily_hours,
+  });
+
+  res.status(200).json(ok(plan));
+});
+
+/** The live plan for one resource. ZERO AI calls. */
+export const getSubjectPlan = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const plan = await subjectPlanService.getSubjectPlan({
+    userId:     req.user.id,
+    resourceId: id,
+  });
+  res.status(200).json(ok({ plan }));
+});
+
+/** Every per-resource plan the student holds. ZERO AI calls. */
+export const listSubjectPlans = asyncHandler(async (req: Request, res: Response) => {
+  const plans = await subjectPlanService.listSubjectPlans(req.user.id);
+  res.status(200).json(ok(plans));
+});
+
+/** Toggle one task's completed flag, addressed positionally. */
+export const updateSubjectPlanTask = asyncHandler(async (req: Request, res: Response) => {
+  const schema = z.object({
+    resource_id: z.string().uuid(),
+    week_number: z.number().int().positive(),
+    date:        z.string().min(1),
+    task_index:  z.number().int().min(0),
+    completed:   z.boolean(),
+  }).strict();
+
+  const body = schema.parse(req.body);
+
+  const plan = await subjectPlanService.setSubjectTaskCompleted({
+    userId:     req.user.id,
+    resourceId: body.resource_id,
+    weekNumber: body.week_number,
+    date:       body.date,
+    taskIndex:  body.task_index,
+    completed:  body.completed,
+  });
+
+  res.status(200).json(ok({ plan }));
+});
 
 export const getMyStudyPlan = asyncHandler(async (req: Request, res: Response) => {
   const plan = await aiService.getStudyPlan(req.user.id);

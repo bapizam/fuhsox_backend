@@ -215,6 +215,14 @@ export interface IAIQuestion extends Document {
    * draw from it instead of paying another generation call.
    */
   objective_id?: string;
+  /**
+   * Set only for placement items (single-subject plan, Phase 1). Tags this doc
+   * with the `SyllabusNode` it was written from, which is how a placement answer
+   * maps back to a chapter. Mutually exclusive with `objective_id` in practice —
+   * a placement item belongs to no objective, which also keeps it out of every
+   * mastery pool query.
+   */
+  node_id?: string;
   /** Bloom level this question targets — drives the per-level partial credit. */
   bloom_level?: string;
   /** Source page in the student's material this was grounded on (reformation P1). */
@@ -251,6 +259,7 @@ const AIQuestionSchema = new Schema<IAIQuestion>(
     quality_flag:   { type: String, enum: ['good', 'flagged'], default: 'good' },
     flag_reason:    { type: String },
     objective_id:   { type: String, index: true },
+    node_id:        { type: String, index: true },
     bloom_level:    { type: String },
     source_page:    { type: Number },
     rubric:         { type: String },
@@ -493,4 +502,134 @@ StudyPlanVersionSchema.index({ user_id: 1, createdAt: -1 });
 export const StudyPlanVersion = model<IStudyPlanVersion>(
   'StudyPlanVersion',
   StudyPlanVersionSchema,
+);
+
+// ─── Per-resource study plan (single-subject plan, Phase 2) ────────────────────
+
+/**
+ * One task in a resource-anchored plan.
+ *
+ * The difference that matters versus `IStudyPlanTask` is `node_id`: a task points
+ * at a REAL `SyllabusNode`, not a free-text topic string. The old plan's tasks
+ * were paraphrases the model invented, so verifying one had to string-match an
+ * objective and, on a miss, mint an orphan with no `resource_id` — which meant
+ * the questions that then set the student's mastery were ungrounded. A node id
+ * makes that whole failure mode impossible.
+ */
+export interface ISubjectPlanTask {
+  node_id: string;
+  chapter_title: string;
+  /** Copied from the node at generation time so rendering needs no join. */
+  page_start?: number;
+  page_end?: number;
+  activity: 'read' | 'practice' | 'verify';
+  duration_mins: number;
+  /** What to actually do — the model's own words, one sentence. */
+  detail?: string;
+  completed: boolean;
+}
+
+export interface ISubjectPlanDay {
+  day: string;
+  date: string;
+  tasks: ISubjectPlanTask[];
+}
+
+export interface ISubjectPlanWeek {
+  week_number: number;
+  days: ISubjectPlanDay[];
+}
+
+export interface ISubjectStudyPlan extends Document {
+  _id: Types.ObjectId;
+  user_id: string;
+  institution_id: string;
+  /** The LearningResource this plan is anchored to. */
+  resource_id: string;
+  /** Denormalised for display; the resource remains the source of truth. */
+  subject: string;
+  exam_date?: Date;
+  daily_hours?: number;
+  weeks: ISubjectPlanWeek[];
+  milestones: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const subjectPlanWeeks = [
+  {
+    week_number: Number,
+    days: [
+      {
+        day:  String,
+        date: String,
+        tasks: [
+          {
+            node_id:       String,
+            chapter_title: String,
+            page_start:    Number,
+            page_end:      Number,
+            activity:      { type: String, enum: ['read', 'practice', 'verify'] },
+            duration_mins: Number,
+            detail:        String,
+            completed:     { type: Boolean, default: false },
+          },
+        ],
+      },
+    ],
+  },
+];
+
+const SubjectStudyPlanSchema = new Schema<ISubjectStudyPlan>(
+  {
+    user_id:        { type: String, required: true },
+    institution_id: { type: String, required: true },
+    resource_id:    { type: String, required: true },
+    subject:        { type: String, required: true },
+    exam_date:      { type: Date },
+    daily_hours:    { type: Number },
+    weeks:          subjectPlanWeeks,
+    milestones:     [String],
+  },
+  { timestamps: true },
+);
+
+// One live plan PER RESOURCE, not per user — that is what makes a student able to
+// hold a plan for each subject at once, which the single per-user `StudyPlan`
+// could never do.
+SubjectStudyPlanSchema.index({ user_id: 1, resource_id: 1 }, { unique: true });
+
+export const SubjectStudyPlan = model<ISubjectStudyPlan>(
+  'SubjectStudyPlan',
+  SubjectStudyPlanSchema,
+);
+
+export interface ISubjectStudyPlanVersion extends Omit<ISubjectStudyPlan, '_id'> {
+  _id: Types.ObjectId;
+  total_tasks: number;
+  total_weeks: number;
+}
+
+/** Append-only snapshots, same shape without the uniqueness constraint. */
+const SubjectStudyPlanVersionSchema = new Schema<ISubjectStudyPlanVersion>(
+  {
+    user_id:        { type: String, required: true, index: true },
+    institution_id: { type: String, required: true },
+    resource_id:    { type: String, required: true },
+    subject:        { type: String, required: true },
+    exam_date:      { type: Date },
+    daily_hours:    { type: Number },
+    weeks:          subjectPlanWeeks,
+    milestones:     [String],
+    total_tasks:    { type: Number, default: 0 },
+    total_weeks:    { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+
+SubjectStudyPlanVersionSchema.index({ user_id: 1, createdAt: -1 });
+
+export const SubjectStudyPlanVersion = model<ISubjectStudyPlanVersion>(
+  'SubjectStudyPlanVersion',
+  SubjectStudyPlanVersionSchema,
 );

@@ -1,5 +1,5 @@
 import prisma from '@config/database';
-import { calculateSessionXP, evaluateStreak } from '@utils/xp';
+import { calculateSessionXP, earnsRewards, evaluateStreak } from '@utils/xp';
 import type { QuizSession, SessionAnswer, User, Badge } from '@typings/models';
 import { notificationService } from './notification.service';
 import logger from '@lib/logger';
@@ -53,6 +53,15 @@ export async function processSessionComplete(
   userId: string,
   session: QuizSession & { answers: SessionAnswer[] },
 ): Promise<{ xpEarned: number; badges_earned: Badge[] }> {
+  // The WHOLE reward pipeline is skipped for a measurement mode, not just the XP:
+  // a streak day would claim the student studied when they have not yet, and a
+  // perfect-score badge for a test designed to find gaps is nonsense. Guarded
+  // here rather than at the call site so no future caller can reintroduce it.
+  if (!earnsRewards(session.mode)) {
+    logger.info({ userId, sessionId: session.id }, 'Placement session — no XP, streak or badges');
+    return { xpEarned: 0, badges_earned: [] };
+  }
+
   const { xpEarned } = calculateSessionXP(session.answers, session.total_questions);
 
   // Update user XP atomically
@@ -111,9 +120,11 @@ async function checkAndAwardBadges(
   user: User,
   currentSession: QuizSession & { answers: SessionAnswer[] },
 ): Promise<Badge[]> {
-  // Fetch all user sessions for rule evaluation
+  // Fetch all user sessions for rule evaluation. Placement is excluded here too:
+  // this runs for LATER real sessions, and a past diagnostic must not quietly
+  // count toward a "complete N quizzes" or accuracy badge it earned nothing for.
   const allSessions = await prisma.quizSession.findMany({
-    where:   { user_id: user.id, completed_at: { not: null } },
+    where:   { user_id: user.id, completed_at: { not: null }, mode: { not: 'placement' } },
     include: { answers: true },
     orderBy: { completed_at: 'desc' },
     take:    100,
@@ -175,7 +186,11 @@ export async function getUserStats(userId: string): Promise<{
 }> {
   const [sessions, user] = await Promise.all([
     prisma.quizSession.findMany({
-      where:  { user_id: userId, completed_at: { not: null } },
+      // Placement is excluded for the same reason it earns no XP: it is a
+      // measurement, not practice. Counting it would inflate "quizzes taken" and
+      // drag down accuracy with a check the student is MEANT to partly fail —
+      // punishing them, in their own stats, for finding out what they don't know.
+      where:  { user_id: userId, completed_at: { not: null }, mode: { not: 'placement' } },
       select: { correct_count: true, total_questions: true },
     }),
     prisma.user.findUnique({

@@ -7,6 +7,10 @@ import {
   getAIUsageToday,
   getMyStudyPlan,
   updateStudyPlanTask,
+  generateSubjectPlan,
+  getSubjectPlan,
+  listSubjectPlans,
+  updateSubjectPlanTask,
   getMyAIFeedback,
   getAIHistory,
   flagAIQuestion,
@@ -30,6 +34,20 @@ router.get('/plan/me', getMyStudyPlan);
 
 // PATCH /api/v1/ai/plan/me/task         — toggle one plan task's completed flag
 router.patch('/plan/me/task', updateStudyPlanTask);
+
+// ─── Per-resource study plan (single-subject plan, Phase 2) ──────────────────
+// Anchored to ONE uploaded resource, so every task names a real SyllabusNode and
+// carries its page range. The multi-subject `/generate-plan` above is untouched
+// and both continue to work.
+// POST  /api/v1/ai/plan/resource        — generate. ONE AI call (a second only if
+//       the first returned nothing usable). 422 when the resource has no outline.
+router.post('/plan/resource', generateSubjectPlan);
+// GET   /api/v1/ai/plan/resource        — every per-resource plan the student has
+router.get('/plan/resource', listSubjectPlans);
+// GET   /api/v1/ai/plan/resource/:id    — the live plan for one resource id
+router.get('/plan/resource/:id', getSubjectPlan);
+// PATCH /api/v1/ai/plan/resource/task   — toggle one task's completed flag
+router.patch('/plan/resource/task', updateSubjectPlanTask);
 
 // GET  /api/v1/ai/feedback/me           — AI feedback history for current user
 router.get('/feedback/me', getMyAIFeedback);

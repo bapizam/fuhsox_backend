@@ -20,8 +20,9 @@ import { AIQuestion, MicroLesson, ResourceChunk } from '../../mongo/schemas';
 import { AppError } from '@typings/models';
 import { MASTERY_CHECK, REDIS_KEYS } from '@config/constants';
 import { getCount, getEndOfDayTTL, getTodayWAT, incrWithExpiry } from '@lib/redis';
-import { downloadFromStorage, extractPdfText } from '@lib/pdf';
-import { chunkText } from '@lib/chunk';
+import { downloadFromStorage, extractPdfText, type PdfPage } from '@lib/pdf';
+import { chunkPages, chunkText } from '@lib/chunk';
+import { locateChapterPages } from '@utils/page-ranges';
 import { embedTexts, embeddingsAvailable } from '@lib/embeddings';
 import { retrieveChunks } from '@lib/retrieval';
 import { aiService } from './ai.service';
@@ -30,6 +31,7 @@ import {
   applyAttempt,
   calibration,
   computeConfidence,
+  effectiveMastery,
   effectiveState,
   examReadiness,
   examReadinessBand,
@@ -248,7 +250,7 @@ export async function extractSyllabusFromFile(params: {
   if (existing > 0) return listNodes(params.resourceId);
 
   const buffer = await downloadFromStorage(resource.file_url);
-  const text = await extractPdfText(buffer);
+  const { text, pages, pageCount } = await extractPdfText(buffer);
 
   if (!text.trim()) {
     await prisma.learningResource.update({
@@ -262,15 +264,35 @@ export async function extractSyllabusFromFile(params: {
     );
   }
 
+  // Page count is what turns the last chapter's open-ended range into a real one.
+  // Best-effort like the ingestion below — a plan degrades to chapter-only wording
+  // without it, which is not worth failing the extraction over.
+  if (pageCount > 0) {
+    await prisma.learningResource
+      .update({ where: { id: params.resourceId }, data: { page_count: pageCount } })
+      .catch((err) => {
+        logger.warn({ err, resourceId: params.resourceId }, 'Could not store page count');
+      });
+  }
+
   // Ingest the content for RAG grounding (reformation Phase 1) before structure
   // extraction. Best-effort: grounding is an enhancement, so a failure here must
   // not block the student getting their chapter list — generation just falls back
   // to ungrounded when no chunks exist.
-  await ingestResourceChunks(params.resourceId, params.userId, text).catch((err) => {
+  await ingestResourceChunks(params.resourceId, params.userId, text, pages).catch((err) => {
     logger.warn({ err, resourceId: params.resourceId }, 'Resource chunk ingestion failed (non-fatal)');
   });
 
-  return extractSyllabus({ ...params, text });
+  const nodes = await extractSyllabus({ ...params, text });
+
+  // Locate each chapter in the page texts so tasks can cite page ranges. Purely
+  // deterministic (no AI call), and best-effort: a title the extractor invented
+  // or reworded simply keeps null pages.
+  await backfillNodePages(params.resourceId, nodes, pages, pageCount).catch((err) => {
+    logger.warn({ err, resourceId: params.resourceId }, 'Chapter page backfill failed (non-fatal)');
+  });
+
+  return listNodes(params.resourceId);
 }
 
 /**
@@ -282,6 +304,7 @@ export async function ingestResourceChunks(
   resourceId: string,
   userId: string,
   text: string,
+  pages: PdfPage[] = [],
 ): Promise<void> {
   if (!embeddingsAvailable()) {
     logger.info({ resourceId }, 'Embeddings unconfigured — skipping grounding ingestion');
@@ -291,7 +314,10 @@ export async function ingestResourceChunks(
   const existing = await ResourceChunk.countDocuments({ resource_id: resourceId });
   if (existing > 0) return;
 
-  const chunks = chunkText(text);
+  // Page-aware when the extractor gave us boundaries, flat otherwise — a caller
+  // with only a text blob (or a PDF whose pages all failed to render) still gets
+  // chunks, just without the page attribution.
+  const chunks = pages.length > 0 ? chunkPages(pages) : chunkText(text);
   if (chunks.length === 0) return;
 
   const embeddings = await embedTexts(chunks.map((c) => c.text), 'document');
@@ -303,10 +329,38 @@ export async function ingestResourceChunks(
       ordinal:     c.ordinal,
       text:        c.text,
       embedding:   embeddings[i],
+      ...('page' in c ? { page: c.page } : {}),
     })),
   );
 
   logger.info({ resourceId, chunks: chunks.length }, 'Resource ingested for grounding');
+}
+
+/**
+ * Persist `page_start`/`page_end` for a resource's top-level chapters. The
+ * matching itself lives in `utils/page-ranges` so it can be unit-tested; this
+ * only writes what that returns.
+ */
+async function backfillNodePages(
+  resourceId: string,
+  nodes: { id: string; title: string; depth: number; ordinal: number }[],
+  pages: PdfPage[],
+  pageCount: number,
+): Promise<void> {
+  const chapters = nodes.filter((n) => n.depth === 0);
+  const ranges = locateChapterPages(chapters, pages, pageCount);
+  if (ranges.size === 0) return;
+
+  await Promise.all(
+    [...ranges].map(([id, range]) =>
+      prisma.syllabusNode.update({ where: { id }, data: range }),
+    ),
+  );
+
+  logger.info(
+    { resourceId, located: ranges.size, chapters: chapters.length },
+    'Chapter page ranges backfilled',
+  );
 }
 
 /** Delete a resource's chunks — called when the resource itself is deleted. */
@@ -639,6 +693,76 @@ export async function startMasteryCheck(params: {
  * and readiness all flow into the same learner model as chapter objectives, rather
  * than living in a parallel "did they tick it" world.
  */
+/**
+ * Begin a mastery check for a CHAPTER — the per-resource plan's evidence gate.
+ *
+ * This exists to close a hole that `startTopicMasteryCheck` (below) cannot. That
+ * one takes a free-text `(subject, topic)` pair from a plan task and matches an
+ * objective by exact string; a paraphrased topic misses and it mints a brand-new
+ * objective with `resource_id: null`. `ensureQuestionPool` then does
+ * `params.resourceId ? retrieveChunks(...) : []` — so the questions that go on to
+ * SET the student's mastery are generated from the model's world knowledge rather
+ * than the textbook they uploaded, and the learner model quietly fills with
+ * duplicate orphans that dilute readiness.
+ *
+ * Addressing the chapter by `node_id` removes the guesswork entirely. The
+ * objectives come from `generateObjectivesForNode`, which is already
+ * RAG-grounded and sets `resource_id` — so the pool is grounded in the student's
+ * own material by construction.
+ *
+ * Costs ONE AI call the first time a chapter is checked (generating its
+ * objectives) and none afterwards, since both the objectives and the question
+ * pool are cached.
+ */
+export async function startNodeMasteryCheck(params: {
+  userId:        string;
+  institutionId: string;
+  nodeId:        string;
+}): Promise<StartedMasteryCheck> {
+  // Ownership is enforced inside this call (404 on someone else's chapter), and
+  // it returns the existing objectives untouched when the chapter already has
+  // them — so re-verifying a task costs no AI budget.
+  const objectives = await generateObjectivesForNode({
+    nodeId:        params.nodeId,
+    userId:        params.userId,
+    institutionId: params.institutionId,
+  });
+
+  if (objectives.length === 0) {
+    throw new AppError(
+      422,
+      'VALIDATION_ERROR',
+      'That chapter has no learning objectives to check yet. Open it once to generate them.',
+    );
+  }
+
+  // Check the WEAKEST objective in the chapter, ranked exactly as the planner
+  // ranks revision — so the plan and the check agree on what needs proving.
+  const now = new Date();
+  const ranked = revisionPriority(
+    objectives.map((o) => ({
+      id:               o.id,
+      subject:          o.subject,
+      state:            o.state,
+      mastery_score:    o.mastery_score,
+      confidence:       o.confidence,
+      weight:           o.weight,
+      next_review_at:   o.next_review_at,
+      fsrs_stability:   o.fsrs_stability,
+      fsrs_last_review: o.fsrs_last_review,
+    })),
+    now,
+  );
+
+  const targetId = ranked[0]?.objective_id;
+  const objective = objectives.find((o) => o.id === targetId) ?? objectives[0];
+  if (!objective) {
+    throw new AppError(422, 'VALIDATION_ERROR', 'That chapter has no objective to check');
+  }
+
+  return beginCheckForObjective(objective, params.userId, params.institutionId);
+}
+
 export async function startTopicMasteryCheck(params: {
   userId:        string;
   institutionId: string;
@@ -945,6 +1069,141 @@ export async function getLearnerModel(userId: string) {
   };
 }
 
+// ─── Per-resource readiness (single-subject plan, Phase 4) ────────────────────
+
+export interface ChapterReadiness {
+  node_id:             string;
+  title:               string;
+  ordinal:             number;
+  page_start:          number | null;
+  page_end:            number | null;
+  objectives_total:    number;
+  objectives_verified: number;
+  /** 0..100, decay-adjusted. 0 when the chapter has no objectives yet. */
+  mastery_percent:     number;
+  /**
+   * The placement answer for this chapter, or null if it was never asked.
+   *
+   * A WEAK signal — one question — and never mixed into `mastery_percent`. It is
+   * here so the UI can say "you got the placement question right" for a chapter
+   * with no real evidence yet, without implying that is mastery.
+   */
+  placement:           boolean | null;
+}
+
+export interface ResourceReadiness {
+  resource_id:         string;
+  subject:             string;
+  /**
+   * `coverage × depth` over THIS resource's objectives only.
+   *
+   * `getLearnerModel`'s headline number is computed across every objective the
+   * student owns, in every subject — so it answers "how ready am I overall",
+   * never "how ready am I for this exam". Same pure functions, scoped input.
+   *
+   * Still an ESTIMATE, and a narrower base makes it a noisier one: label it as
+   * such and show `readiness_band` beside it.
+   */
+  exam_readiness:      number;
+  readiness_band:      { low: number; high: number };
+  objectives_total:    number;
+  objectives_verified: number;
+  due_for_review:      number;
+  chapters:            ChapterReadiness[];
+  revision_priority:   { objective_id: string; subject: string; priority: number; reason: string; statement: string }[];
+}
+
+/**
+ * Readiness for ONE resource, with a per-chapter breakdown.
+ *
+ * Everything here reuses the pure functions in `utils/mastery` — the only change
+ * is what goes in. Nothing new is being measured, and no new claim is being made.
+ */
+export async function getResourceReadiness(params: {
+  userId:     string;
+  resourceId: string;
+}): Promise<ResourceReadiness> {
+  const resource = await prisma.learningResource.findFirst({
+    where:  { id: params.resourceId, user_id: params.userId },
+    select: { id: true, title: true, course_code: true },
+  });
+  if (!resource) throw new AppError(404, 'NOT_FOUND', 'Resource not found');
+
+  const [nodes, objectives, placements] = await Promise.all([
+    prisma.syllabusNode.findMany({
+      where:   { resource_id: params.resourceId, depth: 0 },
+      orderBy: { ordinal: 'asc' },
+      select:  { id: true, title: true, ordinal: true, page_start: true, page_end: true },
+    }),
+    prisma.learningObjective.findMany({
+      where:  { user_id: params.userId, resource_id: params.resourceId },
+      select: {
+        id: true, subject: true, state: true, mastery_score: true,
+        confidence: true, weight: true, next_review_at: true, statement: true,
+        node_id: true, fsrs_stability: true, fsrs_last_review: true,
+      },
+    }),
+    prisma.chapterPlacement.findMany({
+      where:  { user_id: params.userId, resource_id: params.resourceId },
+      select: { node_id: true, correct: true },
+    }),
+  ]);
+
+  const now = new Date();
+  const snapshots: ObjectiveSnapshot[] = objectives;
+  const statementById = new Map(objectives.map((o) => [o.id, o.statement]));
+  const placementByNode = new Map(placements.map((p) => [p.node_id, p.correct]));
+
+  const byNode = new Map<string, typeof objectives>();
+  for (const objective of objectives) {
+    if (!objective.node_id) continue;
+    const bucket = byNode.get(objective.node_id);
+    if (bucket) bucket.push(objective);
+    else byNode.set(objective.node_id, [objective]);
+  }
+
+  const chapters: ChapterReadiness[] = nodes.map((node) => {
+    const owned = byNode.get(node.id) ?? [];
+    const verified = owned.filter((o) =>
+      ['verified', 'mastered'].includes(effectiveState(o.state, o.next_review_at, now)),
+    ).length;
+    const mastery =
+      owned.length > 0
+        ? owned.reduce((sum, o) => sum + effectiveMastery(o, now), 0) / owned.length
+        : 0;
+
+    return {
+      node_id:             node.id,
+      title:               node.title,
+      ordinal:             node.ordinal,
+      page_start:          node.page_start,
+      page_end:            node.page_end,
+      objectives_total:    owned.length,
+      objectives_verified: verified,
+      mastery_percent:     Math.round(mastery * 1000) / 10,
+      placement:           placementByNode.get(node.id) ?? null,
+    };
+  });
+
+  return {
+    resource_id:         resource.id,
+    subject:             resource.course_code ?? resource.title,
+    exam_readiness:      examReadiness(snapshots, now),
+    readiness_band:      examReadinessBand(snapshots, now),
+    objectives_total:    objectives.length,
+    objectives_verified: snapshots.filter((o) =>
+      ['verified', 'mastered'].includes(effectiveState(o.state, o.next_review_at, now)),
+    ).length,
+    due_for_review: objectives.filter(
+      (o) => o.next_review_at !== null && o.next_review_at <= now,
+    ).length,
+    chapters,
+    revision_priority: revisionPriority(snapshots, now)
+      .slice(0, 10)
+      .map((p) => ({ ...p, statement: statementById.get(p.objective_id) ?? '' })),
+  };
+}
+
 // ─── Test-explain-retest (reformation Phase 3, Workstream C) ──────────────────
 
 export interface RemediationResult {
@@ -1198,6 +1457,23 @@ function emptyToNull(value: string | undefined): string | null {
  * than "what did we tell this student before they sat the exam?". Computing it
  * costs zero AI calls (it is arithmetic over the objective rows).
  */
+/**
+ * Readiness over one subject's objectives only. Null when the student has none
+ * in that subject, which is an honest "we predicted nothing" rather than a zero.
+ */
+async function subjectScopedReadiness(userId: string, subject: string): Promise<number | null> {
+  const objectives = await prisma.learningObjective.findMany({
+    where:  { user_id: userId, subject },
+    select: {
+      id: true, subject: true, state: true, mastery_score: true,
+      confidence: true, weight: true, next_review_at: true,
+      fsrs_stability: true, fsrs_last_review: true,
+    },
+  });
+  if (objectives.length === 0) return null;
+  return examReadiness(objectives, new Date());
+}
+
 export async function recordExamOutcome(params: {
   userId:        string;
   institutionId: string;
@@ -1207,19 +1483,29 @@ export async function recordExamOutcome(params: {
   gradeLabel?:   string;
   examDate:      Date;
 }) {
-  const model = await getLearnerModel(params.userId);
+  const subject = params.subject.trim();
+
+  // Both numbers are snapshotted: the global one because calibration still reads
+  // it and its meaning must not shift mid-dataset, and the subject-scoped one
+  // because it is what should have been compared against a single-subject grade
+  // all along. See the schema comment on `predicted_subject_readiness`.
+  const [model, subjectReadiness] = await Promise.all([
+    getLearnerModel(params.userId),
+    subjectScopedReadiness(params.userId, subject),
+  ]);
 
   return prisma.examOutcome.create({
     data: {
       user_id:             params.userId,
       institution_id:      params.institutionId,
-      subject:             params.subject.trim(),
+      subject,
       // An empty string is a missing value here, not a value — `??` would store it.
       course_code:         emptyToNull(params.courseCode),
       score_percent:       params.scorePercent,
       grade_label:         emptyToNull(params.gradeLabel),
       exam_date:           params.examDate,
       predicted_readiness: model.objectives_total > 0 ? model.exam_readiness : null,
+      predicted_subject_readiness: subjectReadiness,
     },
   });
 }
@@ -1286,9 +1572,11 @@ export const learningService = {
   generateObjectivesForNode,
   listObjectives,
   startMasteryCheck,
+  startNodeMasteryCheck,
   startTopicMasteryCheck,
   completeMasteryCheck,
   getLearnerModel,
+  getResourceReadiness,
   recordExamOutcome,
   listExamOutcomes,
   deleteExamOutcome,

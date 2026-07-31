@@ -1,4 +1,4 @@
-import { calculateSessionXP, evaluateStreak } from '@utils/xp';
+import { calculateSessionXP, earnsRewards, evaluateStreak } from '@utils/xp';
 import type { SessionAnswer } from '@typings/models';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -15,6 +15,25 @@ function makeAnswers(correctCount: number, totalCount: number): SessionAnswer[] 
     answered_at:    new Date(),
   } as SessionAnswer));
 }
+
+// ─── Rewardless modes ─────────────────────────────────────────────────────────
+
+describe('earnsRewards', () => {
+  it('pays nothing for a placement check', () => {
+    // A diagnostic is a measurement, not an achievement — the student is MEANT to
+    // get things wrong, so rewarding it would pay them for being assessed and let
+    // the check be farmed in place of studying.
+    expect(earnsRewards('placement')).toBe(false);
+  });
+
+  it('still pays for every mode that is real practice', () => {
+    expect(earnsRewards('practice')).toBe(true);
+    expect(earnsRewards('exam')).toBe(true);
+    expect(earnsRewards('review')).toBe(true);
+    // A mastery check IS earned work against a real threshold — it keeps paying.
+    expect(earnsRewards('mastery_check')).toBe(true);
+  });
+});
 
 // ─── XP Edge Cases ────────────────────────────────────────────────────────────
 

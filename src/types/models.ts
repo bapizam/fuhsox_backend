@@ -19,7 +19,9 @@ export type QuestionStatus = 'draft' | 'review' | 'published' | 'archived';
 export type QuestionSource = 'manual' | 'pdf_upload' | 'csv_upload' | 'ai_generated';
 // 'mastery_check' is the adaptive assessment that proves a LearningObjective —
 // it reuses the quiz session machinery rather than a parallel engine (M7 item 4).
-export type SessionMode    = 'practice' | 'exam' | 'review' | 'mastery_check';
+// 'placement' is the cold-start diagnostic taken before a study plan is built.
+// Keep in step with the `SessionMode` enum in prisma/schema.prisma.
+export type SessionMode    = 'practice' | 'exam' | 'review' | 'mastery_check' | 'placement';
 export type ConnectionStatus = 'pending' | 'accepted' | 'declined' | 'blocked';
 export type NotificationType = 'event' | 'reminder' | 'social' | 'broadcast' | 'system';
 export type TargetAudience = 'all' | 'faculty' | 'department';

@@ -8,6 +8,7 @@ import { ok } from '@utils/response';
 import { uploadPDF } from '@lib/s3';
 import { learningService } from '@services/learning.service';
 import { kcService } from '@services/kc.service';
+import * as placementService from '@services/placement.service';
 
 /**
  * Adaptive learning engine endpoints (M7 item 4).
@@ -166,6 +167,75 @@ export const startTopicMasteryCheck = asyncHandler(async (req: Request, res: Res
     topic:         body.topic,
   });
   res.status(201).json(ok(started));
+});
+
+/**
+ * Start a mastery check for a CHAPTER — the per-resource plan's evidence gate.
+ *
+ * Unlike `topic-check`, the objective is resolved from a real `node_id`, so the
+ * questions are always grounded in the student's own material instead of falling
+ * back to an orphan objective with no resource behind it.
+ */
+export const startNodeMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
+  const body = z.object({ node_id: z.string().uuid() }).strict().parse(req.body);
+
+  const started = await learningService.startNodeMasteryCheck({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    nodeId:        body.node_id,
+  });
+  res.status(201).json(ok(started));
+});
+
+/**
+ * Start the cold-start placement check for a resource. ONE AI call; 422 when the
+ * resource has no outline yet, with a message pointing at both ways to get one.
+ */
+export const startPlacementCheck = asyncHandler(async (req: Request, res: Response) => {
+  const body = z.object({ resource_id: z.string().uuid() }).strict().parse(req.body);
+
+  const started = await placementService.startPlacementCheck({
+    userId:        req.user.id,
+    institutionId: req.institutionId,
+    resourceId:    body.resource_id,
+  });
+  res.status(201).json(ok(started));
+});
+
+/** Record a finished placement check. ZERO AI calls — it only reads answers. */
+export const completePlacementCheck = asyncHandler(async (req: Request, res: Response) => {
+  const body = z.object({ session_id: z.string().uuid() }).strict().parse(req.body);
+
+  const result = await placementService.completePlacementCheck({
+    userId:    req.user.id,
+    sessionId: body.session_id,
+  });
+  res.status(200).json(ok(result));
+});
+
+/**
+ * Readiness for ONE resource, with a per-chapter breakdown. ZERO AI calls —
+ * pure computation over objectives already scored.
+ */
+export const getResourceReadiness = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+
+  const readiness = await learningService.getResourceReadiness({
+    userId:     req.user.id,
+    resourceId: id,
+  });
+  res.status(200).json(ok(readiness));
+});
+
+/** The standing placement for a resource. ZERO AI calls. */
+export const getPlacement = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+
+  const chapters = await placementService.getPlacementForResource({
+    userId:     req.user.id,
+    resourceId: id,
+  });
+  res.status(200).json(ok({ chapters }));
 });
 
 export const completeMasteryCheck = asyncHandler(async (req: Request, res: Response) => {

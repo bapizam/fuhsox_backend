@@ -5,7 +5,9 @@ import { AIQuestion, AIFeedback, StudyPlan } from '../../mongo/schemas';
 import { REDIS_KEYS } from '@config/constants';
 import { incrWithExpiry, getCount, getEndOfDayTTL, getTodayWAT } from '@lib/redis';
 import { AppError, type GeneratedQuestion, type AIGenerationResult } from '@typings/models';
-import { partitionValidItems, type RawItem } from '@utils/item-validation';
+import { partitionValidItems, validateGeneratedItem, type RawItem } from '@utils/item-validation';
+import { validateResourcePlan, type ValidatedPlan } from '@utils/plan-validation';
+import { retrieveChunksForQueries } from '@lib/retrieval';
 import {
   describeChoice,
   findOption,
@@ -1253,6 +1255,402 @@ export async function generateMasteryQuestions(params: {
     difficulty:    q.difficulty,
     question_type: q.question_type,
   }));
+}
+
+// ─── Resource-anchored study plan (single-subject plan, Phase 2) ───────────────
+
+const RESOURCE_PLAN_SYSTEM_PROMPT = `You are an expert academic coach building a study plan from ONE book the student owns.
+Every task you write must name a chapter by its exact node_id from the list you are given — never invent a chapter, never write a topic in free text.
+Schedule the chapters the student is weakest on EARLIEST and revisit them; do not simply walk the book front to back.
+Each chapter should be read before it is practised, and verified only after both.
+CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
+JSON format strictly: { "weeks": [{ "week_number": number, "days": [{ "day": string, "date": "YYYY-MM-DD", "tasks": [{ "node_id": string, "activity": "read"|"practice"|"verify", "duration_mins": number, "detail": string }] }] }], "milestones": [string] }`;
+
+/**
+ * Chapters plus everything known about where this student stands in them.
+ *
+ * This is the grounding the old planner could not build: it takes only a user id,
+ * loads EVERY objective and resource the student owns, and truncates at 40 in
+ * subject order — so the subject actually being planned can be crowded out
+ * entirely by unrelated ones. Anchoring to a resource makes the scope exact.
+ */
+async function gatherResourceGrounding(params: {
+  userId:     string;
+  resourceId: string;
+}): Promise<{
+  lines:    string[];
+  nodeIds:  string[];
+  weakest:  { nodeId: string; title: string }[];
+}> {
+  const [nodes, objectives, placements] = await Promise.all([
+    prisma.syllabusNode.findMany({
+      where:   { resource_id: params.resourceId, depth: 0 },
+      orderBy: { ordinal: 'asc' },
+      select:  { id: true, title: true, ordinal: true, page_start: true, page_end: true },
+    }),
+    prisma.learningObjective.findMany({
+      where:  { user_id: params.userId, resource_id: params.resourceId },
+      select: {
+        id: true, node_id: true, statement: true, state: true,
+        mastery_score: true, confidence: true, weight: true,
+        next_review_at: true, fsrs_stability: true, fsrs_last_review: true,
+      },
+    }),
+    prisma.chapterPlacement.findMany({
+      where:  { user_id: params.userId, resource_id: params.resourceId },
+      select: { node_id: true, correct: true },
+    }),
+  ]);
+
+  const now = new Date();
+  const placementByNode = new Map(placements.map((p) => [p.node_id, p.correct]));
+
+  // Mastery per chapter, from the objectives that belong to it.
+  const objectivesByNode = new Map<string, typeof objectives>();
+  for (const objective of objectives) {
+    if (!objective.node_id) continue;
+    const bucket = objectivesByNode.get(objective.node_id);
+    if (bucket) bucket.push(objective);
+    else objectivesByNode.set(objective.node_id, [objective]);
+  }
+
+  /**
+   * Lower is weaker. Measured mastery wins where it exists, because it is real
+   * evidence; placement is only consulted for chapters never actually studied,
+   * and an unmeasured chapter sits between "got it wrong" and "got it right" —
+   * unknown is not the same as bad.
+   */
+  const standing = (nodeId: string): { score: number; label: string } => {
+    const owned = objectivesByNode.get(nodeId) ?? [];
+    if (owned.length > 0) {
+      const verified = owned.filter(
+        (o) => effectiveState(o.state, o.next_review_at, now) === 'verified'
+          || effectiveState(o.state, o.next_review_at, now) === 'mastered',
+      ).length;
+      const mean = owned.reduce((sum, o) => sum + o.mastery_score, 0) / owned.length;
+      return {
+        score: mean,
+        label: `studied — ${verified}/${owned.length} objectives verified, mastery ${Math.round(mean * 100)}%`,
+      };
+    }
+    const placed = placementByNode.get(nodeId);
+    if (placed === true)  return { score: 0.7, label: 'placement: answered correctly (rough signal, one question)' };
+    if (placed === false) return { score: 0.15, label: 'placement: answered incorrectly (rough signal, one question)' };
+    return { score: 0.5, label: 'not yet measured' };
+  };
+
+  const lines: string[] = ['Chapters in this book, with where the student stands:'];
+  for (const node of nodes) {
+    const { label } = standing(node.id);
+    const pages =
+      node.page_start !== null && node.page_end !== null
+        ? ` (pp. ${node.page_start}-${node.page_end})`
+        : '';
+    lines.push(`- node_id=${node.id} | "${node.title}"${pages} — ${label}`);
+  }
+
+  const weakest = [...nodes]
+    .sort((a, b) => standing(a.id).score - standing(b.id).score)
+    .slice(0, 5)
+    .map((n) => ({ nodeId: n.id, title: n.title }));
+
+  if (weakest.length > 0) {
+    lines.push('', 'Weakest chapters — schedule these EARLIEST and revisit them:');
+    for (const node of weakest) lines.push(`- node_id=${node.nodeId} | "${node.title}"`);
+  }
+
+  return { lines, nodeIds: nodes.map((n) => n.id), weakest };
+}
+
+export interface ResourcePlanInput {
+  resourceId:    string;
+  subject:       string;
+  resourceTitle: string;
+  examDate:      Date | null;
+  dailyHours:    number;
+  userId:        string;
+  institutionId: string;
+}
+
+/**
+ * Generate a study plan for ONE resource.
+ *
+ * Every task points at a real `SyllabusNode`, and the output is validated against
+ * that resource's own chapter ids before it is stored — so a plan can no longer
+ * reference something that does not exist. Exactly one repair pass is allowed
+ * when nothing usable comes back, matching the item-generation precedent: an
+ * unbounded repair against a model that keeps producing the same defect burns the
+ * student's whole daily budget.
+ */
+export async function generateResourcePlan(
+  params: ResourcePlanInput,
+): Promise<ValidatedPlan> {
+  const grounding = await gatherResourceGrounding({
+    userId:     params.userId,
+    resourceId: params.resourceId,
+  });
+
+  if (grounding.nodeIds.length === 0) {
+    throw new AppError(
+      422,
+      'VALIDATION_ERROR',
+      'This resource has no chapters yet. Extract its outline, or type the chapter list in, then try again.',
+    );
+  }
+
+  // Real passages for the weakest chapters only — enough for the plan to say
+  // something specific about what to do there, without paying to embed the book.
+  const passages = await retrieveChunksForQueries(
+    params.resourceId,
+    grounding.weakest.map((w) => w.title),
+    2,
+  ).catch(() => grounding.weakest.map(() => []));
+
+  const weakDetail = grounding.weakest
+    .map((weak, i) => {
+      const texts = (passages[i] ?? []).map((p) => p.text).join(' ');
+      return texts ? `- "${weak.title}": ${texts.slice(0, 600)}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const ctx = await getLearnerContext(params.userId, params.institutionId);
+  const today = new Date();
+  const weeksLeft = params.examDate
+    ? Math.max(1, Math.ceil((params.examDate.getTime() - today.getTime()) / (7 * 86400000)))
+    : 4;
+
+  const prompt = `Build a ${weeksLeft}-week study plan for "${params.resourceTitle}" (subject: ${params.subject}).
+
+${
+  params.examDate
+    ? `Exam date: ${params.examDate.toISOString().split('T')[0]}\nWeeks available: ${weeksLeft}`
+    : `No exam deadline — build a balanced ${weeksLeft}-week rotation the student can repeat.`
+}
+Available study hours per day: ${params.dailyHours}
+Starting date: ${today.toISOString().split('T')[0]}
+
+${grounding.lines.join('\n')}
+${weakDetail ? `\nWhat those weak chapters actually cover:\n${weakDetail}\n` : ''}
+Rules:
+- Every task's "node_id" MUST be one of the node_id values listed above, copied exactly.
+- Do not exceed ${params.dailyHours} hours of tasks on any single day.
+- "detail" is ONE sentence saying what to do — no page numbers, they are added automatically.
+- Front-load the weakest chapters and come back to them; a chapter the student has
+  already verified needs revision, not a full re-read.
+
+Format as the specified JSON.`;
+
+  const request = async (repairNote?: string) => {
+    await consumeAIBudget(params.userId, params.institutionId);
+    const response = await callAI({
+      system:     withDiscipline(ctx, RESOURCE_PLAN_SYSTEM_PROMPT),
+      messages:   [{ role: 'user', content: repairNote ? `${prompt}\n\n${repairNote}` : prompt }],
+      max_tokens: 8192,
+    });
+
+    await prisma.aIUsageLog.create({
+      data: {
+        user_id:        params.userId,
+        institution_id: params.institutionId,
+        feature:        'study_plan',
+        tokens_used:    response.input_tokens + response.output_tokens,
+        model:          response.model,
+      },
+    });
+
+    return parseJSONResponse<Record<string, unknown>>(response.text, 'resource study plan');
+  };
+
+  const first = validateResourcePlan(await request(), grounding.nodeIds);
+
+  if (first.taskCount > 0) {
+    if (first.dropped > 0) {
+      logger.warn(
+        { resourceId: params.resourceId, dropped: first.dropped, reasons: first.reasons },
+        'Resource plan tasks failed validation and were discarded',
+      );
+    }
+    return first;
+  }
+
+  // Nothing survived — one repair, naming the exact defects.
+  logger.warn(
+    { resourceId: params.resourceId, reasons: first.reasons },
+    'Resource plan produced no usable tasks; attempting one repair',
+  );
+
+  const repaired = validateResourcePlan(
+    await request(
+      `Your previous attempt produced no usable tasks (${first.reasons.join('; ')}). ` +
+        'Every task MUST copy a node_id exactly as listed, and set "activity" to read, practice or verify.',
+    ),
+    grounding.nodeIds,
+  );
+
+  if (repaired.taskCount === 0) {
+    throw new AppError(500, 'INTERNAL_ERROR', 'The AI could not build a usable plan for this resource');
+  }
+
+  return repaired;
+}
+
+// ─── Placement items (single-subject plan, Phase 1) ────────────────────────────
+
+export interface PlacementChapter {
+  nodeId: string;
+  title: string;
+  /** Retrieved passages from this chapter; empty = ungrounded for this one. */
+  grounding: { text: string; page?: number }[];
+}
+
+/**
+ * One diagnostic item per chapter, generated in a SINGLE call.
+ *
+ * This is the cold-start measurement: before it exists, a plan can only order
+ * chapters the way the book does. One item per chapter is a deliberately cheap,
+ * deliberately weak signal — enough to decide what to study first, and nowhere
+ * near enough to be mastery evidence (which is why the result lands in
+ * `ChapterPlacement`, not in the learner model).
+ *
+ * Items are MCQ-only: free-response would need the AI grader on a check whose
+ * entire point is to be one cheap call, and a placement answer is never used for
+ * partial credit anyway.
+ *
+ * Chapters whose item fails validation are simply absent from the result — the
+ * plan then treats them as unmeasured rather than as failed. There is no repair
+ * pass: unlike a mastery pool, a thin placement is still perfectly usable.
+ */
+export async function generatePlacementItems(params: {
+  subject:       string;
+  chapters:      PlacementChapter[];
+  userId:        string;
+  institutionId: string;
+}): Promise<{ id: string; node_id: string }[]> {
+  if (params.chapters.length === 0) return [];
+
+  await consumeAIBudget(params.userId, params.institutionId);
+
+  const brief = params.chapters
+    .map((chapter, i) => {
+      const passages = chapter.grounding
+        .map((g, j) => `  [Passage ${j + 1}${typeof g.page === 'number' ? `, p.${g.page}` : ''}] ${g.text}`)
+        .join('\n');
+      return `Chapter ${i + 1}: ${chapter.title}${passages ? `\n${passages}` : '\n  (no passages retrieved — use the chapter title only)'}`;
+    })
+    .join('\n\n');
+
+  const response = await callAI({
+    system:   QUESTION_GENERATION_SYSTEM_PROMPT,
+    messages: [
+      {
+        role:    'user',
+        content: `Write EXACTLY ONE multiple-choice question for each chapter below, in the subject "${params.subject}".
+
+This is a PLACEMENT check: the student has not studied yet, and the point is to find
+out which chapters they already understand. So each question must test the chapter's
+single most central idea at "understand" or "apply" level — not a peripheral detail,
+not a definition anyone could guess, and not a trick. A student who knows the chapter
+should get it right; one who does not should get it wrong.
+
+Ground each question in that chapter's passages where they are given, and set
+"source_page" to the passage page it came from. Do not introduce facts the passages
+do not support. Where a chapter has no passages, write from the chapter title alone.
+
+Exactly one option is correct and "correct_answer" is that option's KEY (e.g. "B").
+Every DISTRACTOR must carry a "misconception" naming the specific error a student who
+picks it holds. The correct option has no misconception. Distractors must be plausible,
+must differ from each other, and must NEVER be "all of the above", "none of the above"
+or any variant.
+
+=== CHAPTERS ===
+${brief}
+=== END CHAPTERS ===
+
+Return ONLY JSON, with "chapter" being the 1-based chapter number above:
+{ "questions": [{ "chapter": 1, "question_text": "...",
+  "options": [{"key":"A","text":"...","misconception":"... (omit on the correct option)"}],
+  "correct_answer": "A", "explanation": "...",
+  "difficulty": "easy|medium|hard", "source_page": 12 }] }`,
+      },
+    ],
+    max_tokens: 8192,
+  });
+
+  const parsed = parseJSONResponse<{ questions?: Record<string, unknown>[] }>(
+    response.text,
+    'placement items',
+  );
+
+  await prisma.aIUsageLog.create({
+    data: {
+      user_id:        params.userId,
+      institution_id: params.institutionId,
+      feature:        'question_generation',
+      tokens_used:    response.input_tokens + response.output_tokens,
+      model:          response.model,
+    },
+  });
+
+  // Keep the FIRST usable item per chapter. A model that ignores "exactly one"
+  // and returns three for chapter 2 must not get three votes on that chapter.
+  const claimed = new Set<string>();
+  const rows: (MasteryItemRow & { node_id: string })[] = [];
+
+  for (const raw of parsed.questions ?? []) {
+    const index = typeof raw.chapter === 'number' ? raw.chapter - 1 : -1;
+    const chapter = params.chapters[index];
+    if (!chapter || claimed.has(chapter.nodeId)) continue;
+
+    const verdict = validateGeneratedItem({
+      question_text:  raw.question_text,
+      options:        raw.options,
+      correct_answer: raw.correct_answer,
+      question_type:  'mcq',
+    });
+    if (!verdict.ok) {
+      logger.warn(
+        { nodeId: chapter.nodeId, reason: verdict.reason },
+        'Placement item failed validation and was dropped',
+      );
+      continue;
+    }
+
+    const row = toMasteryRow(
+      { ...raw, question_type: 'mcq' },
+      {
+        userId:        params.userId,
+        institutionId: params.institutionId,
+        subject:       params.subject,
+        // A placement item belongs to no objective. Leaving this empty is what
+        // keeps it out of every mastery-pool query, which all filter on it.
+        objectiveId:   '',
+      },
+    );
+    const shuffled = shuffleOptions(row.options, row.correct_answer);
+
+    claimed.add(chapter.nodeId);
+    rows.push({
+      ...row,
+      options:        shuffled.options ?? row.options,
+      correct_answer: shuffled.correct_answer,
+      objective_id:   undefined as unknown as string,
+      node_id:        chapter.nodeId,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new AppError(500, 'INTERNAL_ERROR', 'AI returned no usable placement questions');
+  }
+
+  const saved = await AIQuestion.insertMany(rows);
+
+  logger.info(
+    { chapters: params.chapters.length, items: saved.length },
+    'Placement items generated',
+  );
+
+  return saved.map((q) => ({ id: q._id.toString(), node_id: q.node_id ?? '' }));
 }
 
 // ─── Free-response grading (reformation Phase 2) ───────────────────────────────

@@ -1,5 +1,5 @@
 import { ResourceChunk } from '../../mongo/schemas';
-import { embedQuery } from '@lib/embeddings';
+import { embedQuery, embedTexts } from '@lib/embeddings';
 
 /**
  * Retrieval for RAG grounding (reformation Phase 1).
@@ -74,4 +74,39 @@ export async function retrieveChunks(
     queryEmbedding,
     k,
   );
+}
+
+/**
+ * `retrieveChunks` for several queries at once, returning one result list per
+ * query in the order given.
+ *
+ * The placement check needs passages for every sampled chapter; calling
+ * `retrieveChunks` per chapter would reload the resource's chunks and pay a
+ * separate embedding round-trip each time. This loads the chunks once and embeds
+ * all the queries in a single batch (`embedTexts` batches up to Gemini's cap),
+ * which is the difference between one network call and ten.
+ */
+export async function retrieveChunksForQueries(
+  resourceId: string,
+  queries: string[],
+  k = 6,
+): Promise<RetrievedChunk[][]> {
+  if (queries.length === 0) return [];
+
+  const chunks = await ResourceChunk.find(
+    { resource_id: resourceId },
+    { text: 1, embedding: 1, page: 1, ordinal: 1 },
+  ).lean();
+
+  if (chunks.length === 0) return queries.map(() => []);
+
+  const rankable = chunks.map((c) => ({
+    text:      c.text,
+    embedding: c.embedding,
+    page:      c.page,
+    ordinal:   c.ordinal,
+  }));
+
+  const queryEmbeddings = await embedTexts(queries, 'query');
+  return queryEmbeddings.map((embedding) => rankByCosine(rankable, embedding, k));
 }

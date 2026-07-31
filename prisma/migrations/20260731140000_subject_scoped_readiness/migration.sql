@@ -1,0 +1,17 @@
+-- Subject-scoped predicted readiness (single-subject study plan, Phase 4).
+--
+-- `predicted_readiness` snapshots the learner model's HEADLINE number, which is
+-- computed across every objective the student owns in every subject. The outcome
+-- it is stored beside is a grade for ONE exam — so calibration has been comparing
+-- a whole-portfolio estimate against a single-subject result.
+--
+-- Added ALONGSIDE rather than replacing. Rewriting the existing column would
+-- change the meaning of rows already collected — the only ground truth this
+-- system has — and `utils/calibration` deliberately keeps reading the old one so
+-- its metric does not shift halfway through a dataset. New rows now carry both;
+-- switch calibration over once enough of them exist (it already refuses to fit
+-- below n=30, so it waits on its own).
+--
+-- Nullable, no default, no backfill: historical rows genuinely do not have this
+-- number and cannot have it recomputed, because readiness decays.
+ALTER TABLE "exam_outcomes" ADD COLUMN "predicted_subject_readiness" DOUBLE PRECISION;
