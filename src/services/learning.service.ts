@@ -736,8 +736,8 @@ export async function startNodeMasteryCheck(params: {
     );
   }
 
-  // Check the WEAKEST objective in the chapter, ranked exactly as the planner
-  // ranks revision — so the plan and the check agree on what needs proving.
+  // Weakest first, ranked exactly as the planner ranks revision — so the chapter
+  // is sampled from where it is weakest, and the plan and the check agree.
   const now = new Date();
   const ranked = revisionPriority(
     objectives.map((o) => ({
@@ -753,14 +753,90 @@ export async function startNodeMasteryCheck(params: {
     })),
     now,
   );
+  const order = new Map(ranked.map((r, i) => [r.objective_id, i]));
+  const sorted = [...objectives].sort(
+    (a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999),
+  );
 
-  const targetId = ranked[0]?.objective_id;
-  const objective = objectives.find((o) => o.id === targetId) ?? objectives[0];
-  if (!objective) {
+  const primary = sorted[0];
+  if (!primary) {
     throw new AppError(422, 'VALIDATION_ERROR', 'That chapter has no objective to check');
   }
 
-  return beginCheckForObjective(objective, params.userId, params.institutionId);
+  // One attempt cap for the CHAPTER, keyed on the objective it leads with, so a
+  // student cannot farm the same chapter by re-entering from a different task.
+  const redisKey = REDIS_KEYS.MASTERY_ATTEMPTS(primary.id, getTodayWAT());
+  if ((await getCount(redisKey)) >= MASTERY_CHECK.MAX_ATTEMPTS_PER_DAY) {
+    throw new AppError(
+      429,
+      'RATE_LIMITED',
+      `You've used all ${MASTERY_CHECK.MAX_ATTEMPTS_PER_DAY} checks for this chapter today. Revise the weak areas and come back tomorrow.`,
+    );
+  }
+
+  // Draw ACROSS the chapter's objectives, weakest-first, so "Chapter verified"
+  // means the chapter was tested — not that one objective out of five was. Each
+  // objective's own pool is generated on demand exactly as a single-objective
+  // check would, so a chapter already studied costs no AI budget here.
+  const drawn: { id: string; objectiveId: string }[] = [];
+  const perObjective = Math.max(1, Math.ceil(MASTERY_CHECK.QUESTION_COUNT / sorted.length));
+
+  for (const objective of sorted) {
+    if (drawn.length >= MASTERY_CHECK.QUESTION_COUNT) break;
+
+    const seenIds = await seenQuestionIds(objective.id, params.userId);
+    const pool = await ensureQuestionPool({
+      objectiveId:   objective.id,
+      statement:     objective.statement,
+      subject:       objective.subject,
+      resourceId:    objective.resource_id,
+      userId:        params.userId,
+      institutionId: params.institutionId,
+      seenIds,
+    });
+
+    const take = Math.min(perObjective, MASTERY_CHECK.QUESTION_COUNT - drawn.length);
+    for (const item of selectForCheck({ pool, seenIds, count: take })) {
+      drawn.push({ id: item.id, objectiveId: objective.id });
+    }
+  }
+
+  if (drawn.length === 0) {
+    throw new AppError(500, 'INTERNAL_ERROR', 'Could not assemble questions for this chapter');
+  }
+
+  const session = await prisma.quizSession.create({
+    data: {
+      user_id:         params.userId,
+      institution_id:  params.institutionId,
+      mode:            'mastery_check',
+      question_source: 'ai_generated',
+      total_questions: drawn.length,
+      question_ids:    drawn.map((d) => d.id),
+    },
+  });
+
+  await incrWithExpiry(redisKey, getEndOfDayTTL());
+
+  // First activity on untouched objectives moves them off not_started.
+  const untouched = sorted.filter((o) => o.state === 'not_started').map((o) => o.id);
+  if (untouched.length > 0) {
+    await prisma.learningObjective.updateMany({
+      where: { id: { in: untouched } },
+      data:  { state: 'learning' },
+    });
+  }
+
+  return {
+    session_id:          session.id,
+    objective_id:        primary.id,
+    question_ids:        drawn.map((d) => d.id),
+    threshold:           await thresholdFor(params.institutionId),
+    attempts_left_today: Math.max(
+      0,
+      MASTERY_CHECK.MAX_ATTEMPTS_PER_DAY - ((await getCount(redisKey)) || 0),
+    ),
+  };
 }
 
 export async function startTopicMasteryCheck(params: {
@@ -834,6 +910,88 @@ export interface MasteryCheckResult {
  * AI calls** — grading already happened per answer, and everything here is the
  * arithmetic in `utils/mastery.ts`.
  */
+/**
+ * Record one objective's share of a CHAPTER-wide check.
+ *
+ * Same maths as the main path (`applyAttempt` → FSRS + state + EWMA), on the
+ * items that objective actually owned. Kept separate rather than folded in
+ * because a sibling has no Bloom breakdown or misconception list of its own worth
+ * surfacing — only its score moves.
+ */
+async function applySiblingAttempt(params: {
+  objectiveId:   string;
+  userId:        string;
+  sessionId:     string;
+  scoreFraction: number;
+  threshold:     number;
+  now:           Date;
+}): Promise<void> {
+  const objective = await prisma.learningObjective.findFirst({
+    where: { id: params.objectiveId, user_id: params.userId },
+  });
+  if (!objective) return;
+
+  const outcome = applyAttempt({
+    currentState:    objective.state,
+    previousMastery: objective.mastery_score,
+    priorAttempts:   objective.attempts,
+    scoreFraction:   params.scoreFraction,
+    threshold:       params.threshold,
+    lastVerifiedAt:  objective.last_verified_at,
+    now:             params.now,
+    fsrs: {
+      stability:  objective.fsrs_stability,
+      difficulty: objective.fsrs_difficulty,
+      reps:       objective.fsrs_reps,
+      lapses:     objective.fsrs_lapses,
+      state:      objective.fsrs_state,
+      due:        objective.next_review_at,
+      lastReview: objective.fsrs_last_review,
+    },
+  });
+
+  const recent = (
+    await prisma.masteryAttempt.findMany({
+      where:   { objective_id: objective.id },
+      orderBy: { created_at: 'desc' },
+      take:    4,
+      select:  { score_percent: true },
+    })
+  ).map((a) => a.score_percent / 100);
+
+  await prisma.$transaction([
+    prisma.masteryAttempt.create({
+      data: {
+        objective_id:  objective.id,
+        user_id:       params.userId,
+        session_id:    params.sessionId,
+        score_percent: Math.round(params.scoreFraction * 10000) / 100,
+        threshold:     params.threshold,
+        passed:        params.scoreFraction >= params.threshold,
+        weak_concepts: [],
+      },
+    }),
+    prisma.learningObjective.update({
+      where: { id: objective.id },
+      data:  {
+        state:            outcome.state,
+        mastery_score:    outcome.masteryScore,
+        confidence:       computeConfidence([params.scoreFraction, ...recent]),
+        attempts:         { increment: 1 },
+        last_attempt_at:  params.now,
+        last_verified_at: outcome.lastVerifiedAt,
+        next_review_at:   outcome.nextReviewAt,
+        fsrs_stability:   outcome.fsrs.stability,
+        fsrs_difficulty:  outcome.fsrs.difficulty,
+        fsrs_reps:        outcome.fsrs.reps,
+        fsrs_lapses:      outcome.fsrs.lapses,
+        fsrs_state:       outcome.fsrs.state,
+        fsrs_last_review: outcome.fsrs.lastReview,
+      },
+    }),
+  ]);
+}
+
 export async function completeMasteryCheck(params: {
   objectiveId:   string;
   sessionId:     string;
@@ -862,8 +1020,28 @@ export async function completeMasteryCheck(params: {
   // question docs — no extra generation.
   const questions = await AIQuestion.find(
     { _id: { $in: session.question_ids }, user_id: params.userId },
-    { bloom_level: 1, topic: 1, options: 1 },
+    { bloom_level: 1, topic: 1, options: 1, objective_id: 1 },
   ).lean();
+
+  /**
+   * A CHAPTER check draws across several objectives (`startNodeMasteryCheck`), so
+   * scoring every answer against one of them would credit or blame objectives the
+   * student was never asked about. Each sibling is scored on its OWN subset here;
+   * the objective this call names is still scored below, on the whole session,
+   * because that is the number the student is shown.
+   */
+  const siblingScores = new Map<string, { correct: number; total: number }>();
+  for (const q of questions) {
+    const objectiveId = q.objective_id;
+    if (!objectiveId || objectiveId === objective.id) continue;
+    const id = (q._id as { toString(): string }).toString();
+    const answer = session.answers.find((a) => a.question_id === id);
+    if (!answer) continue;
+    const bucket = siblingScores.get(objectiveId) ?? { correct: 0, total: 0 };
+    bucket.total += 1;
+    if (answer.is_correct) bucket.correct += 1;
+    siblingScores.set(objectiveId, bucket);
+  }
 
   const levelById = new Map<string, string>();
   // question id → (option key → the misconception that option represents).
@@ -971,8 +1149,32 @@ export async function completeMasteryCheck(params: {
     }),
   ]);
 
+  // Siblings from a chapter-wide draw, each on the items it actually owned.
+  for (const [siblingId, score] of siblingScores) {
+    if (score.total === 0) continue;
+    try {
+      await applySiblingAttempt({
+        objectiveId:   siblingId,
+        userId:        params.userId,
+        sessionId:     session.id,
+        scoreFraction: score.correct / score.total,
+        threshold,
+        now,
+      });
+    } catch (err) {
+      // The student's own result is already recorded; a sibling failing to score
+      // must not lose it.
+      logger.warn({ err, siblingId }, 'Could not score sibling objective in chapter check');
+    }
+  }
+
   logger.info(
-    { objectiveId: objective.id, scoreFraction, state: outcome.state },
+    {
+      objectiveId: objective.id,
+      scoreFraction,
+      state:       outcome.state,
+      siblings:    siblingScores.size,
+    },
     'Mastery check completed',
   );
 

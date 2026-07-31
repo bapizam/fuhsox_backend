@@ -1420,6 +1420,11 @@ export async function generateResourcePlan(
     ? Math.max(1, Math.ceil((params.examDate.getTime() - today.getTime()) / (7 * 86400000)))
     : 4;
 
+  // Naming the weekday matters: given only "2026-07-31" the model reliably lays
+  // week 1 out Monday-to-Sunday and schedules days that have already gone.
+  const todayISO = today.toISOString().split('T')[0] ?? '';
+  const todayName = today.toLocaleDateString('en-GB', { weekday: 'long' });
+
   const prompt = `Build a ${weeksLeft}-week study plan for "${params.resourceTitle}" (subject: ${params.subject}).
 
 ${
@@ -1428,12 +1433,16 @@ ${
     : `No exam deadline — build a balanced ${weeksLeft}-week rotation the student can repeat.`
 }
 Available study hours per day: ${params.dailyHours}
-Starting date: ${today.toISOString().split('T')[0]}
+TODAY is ${todayISO} (${todayName}). Week 1 starts TODAY.
 
 ${grounding.lines.join('\n')}
 ${weakDetail ? `\nWhat those weak chapters actually cover:\n${weakDetail}\n` : ''}
 Rules:
 - Every task's "node_id" MUST be one of the node_id values listed above, copied exactly.
+- **Every "date" must be ${todayISO} or later.** Never schedule a day that has already
+  passed. Week 1 runs from ${todayISO} forward — if today is a Friday, week 1 starts on
+  that Friday, it does NOT start on the Monday just gone.
+- "date" is ISO YYYY-MM-DD and "day" is its weekday name; they must agree.
 - Do not exceed ${params.dailyHours} hours of tasks on any single day.
 - "detail" is ONE sentence saying what to do — no page numbers, they are added automatically.
 - Front-load the weakest chapters and come back to them; a chapter the student has
@@ -1462,7 +1471,7 @@ Format as the specified JSON.`;
     return parseJSONResponse<Record<string, unknown>>(response.text, 'resource study plan');
   };
 
-  const first = validateResourcePlan(await request(), grounding.nodeIds);
+  const first = validateResourcePlan(await request(), grounding.nodeIds, today);
 
   if (first.taskCount > 0) {
     if (first.dropped > 0) {
@@ -1483,9 +1492,11 @@ Format as the specified JSON.`;
   const repaired = validateResourcePlan(
     await request(
       `Your previous attempt produced no usable tasks (${first.reasons.join('; ')}). ` +
-        'Every task MUST copy a node_id exactly as listed, and set "activity" to read, practice or verify.',
+        'Every task MUST copy a node_id exactly as listed, set "activity" to read, practice or ' +
+        `verify, and use a "date" of ${todayISO} or later.`,
     ),
     grounding.nodeIds,
+    today,
   );
 
   if (repaired.taskCount === 0) {

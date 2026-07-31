@@ -65,6 +65,16 @@ router.put('/events/:id',          admin.adminUpdateEvent);
 router.post('/events/:id/publish', admin.adminPublishEvent);
 router.delete('/events/:id',       admin.adminCancelEvent);
 
+// ── Blogs ─────────────────────────────────────────────────────────────────────
+// Staff-written long-form that appears in the student campus feed alongside
+// events. Admin-only: there is no student write path, and publishing is the
+// step that makes a blog visible.
+router.get('/blogs',              admin.adminListBlogs);
+router.post('/blogs',             admin.adminCreateBlog);
+router.put('/blogs/:id',          admin.adminUpdateBlog);
+router.post('/blogs/:id/publish', admin.adminPublishBlog);
+router.delete('/blogs/:id',       admin.adminDeleteBlog);
+
 // ── Broadcast / Email ─────────────────────────────────────────────────────────
 router.get('/broadcasts',          admin.adminGetBroadcasts);
 router.get('/broadcasts/:id',      admin.adminGetBroadcastDetail);

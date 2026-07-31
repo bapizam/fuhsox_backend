@@ -116,6 +116,63 @@ describe('validateResourcePlan', () => {
     expect(result.milestones).toEqual(['Real one', 'spaced']);
   });
 
+  describe('past days', () => {
+    // Generated on a Friday, the model lays week 1 out Monday-to-Sunday and tells
+    // the student to study days that have already gone. The prompt asks it not
+    // to; this is what makes sure.
+    const friday = new Date('2026-07-31T09:00:00Z');
+
+    const week = (dates: string[]) => ({
+      weeks: [
+        {
+          week_number: 1,
+          days: dates.map((date) => ({ day: 'D', date, tasks: [task()] })),
+        },
+      ],
+    });
+
+    it('drops days before the start date', () => {
+      const result = validateResourcePlan(
+        week(['2026-07-29', '2026-07-30', '2026-07-31', '2026-08-01']),
+        NODES,
+        friday,
+      );
+      expect(result.weeks[0]?.days.map((d) => d.date)).toEqual(['2026-07-31', '2026-08-01']);
+      expect(result.dropped).toBe(2);
+      expect(result.reasons.join(' ')).toMatch(/past/);
+    });
+
+    it('keeps today, even generated later the same day', () => {
+      const result = validateResourcePlan(week(['2026-07-31']), NODES, friday);
+      expect(result.weeks[0]?.days).toHaveLength(1);
+    });
+
+    it('keeps a day whose date it cannot parse rather than binning it', () => {
+      const result = validateResourcePlan(week(['Week 1, Day 2']), NODES, friday);
+      expect(result.weeks[0]?.days).toHaveLength(1);
+    });
+
+    it('drops a week left empty by past days, without leaving a gap', () => {
+      const result = validateResourcePlan(
+        {
+          weeks: [
+            { week_number: 1, days: [{ date: '2026-07-28', tasks: [task()] }] },
+            { week_number: 2, days: [{ date: '2026-08-04', tasks: [task()] }] },
+          ],
+        },
+        NODES,
+        friday,
+      );
+      expect(result.weeks).toHaveLength(1);
+      expect(result.weeks[0]?.week_number).toBe(1);
+    });
+
+    it('keeps every day when no start date is given', () => {
+      const result = validateResourcePlan(week(['2020-01-01']), NODES);
+      expect(result.weeks[0]?.days).toHaveLength(1);
+    });
+  });
+
   it('rounds a fractional duration rather than storing it', () => {
     const result = validateResourcePlan(plan([task({ duration_mins: 42.7 })]), NODES);
     expect(result.weeks[0]?.days[0]?.tasks[0]?.duration_mins).toBe(43);

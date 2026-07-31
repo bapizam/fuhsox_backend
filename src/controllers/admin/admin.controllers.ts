@@ -8,6 +8,7 @@ import { analyticsService } from '@services/admin/analytics.service';
 import { broadcastService } from '@services/admin/broadcast.service';
 import { eventService } from '@services/admin/event.service';
 import { newsService } from '@services/admin/news.service';
+import { blogService } from '@services/admin/blog.service';
 import { studentService } from '@services/admin/student.service';
 import { questionAdminService } from '@services/admin/question.admin.service';
 import { aiContentAdminService } from '@services/admin/ai-content.service';
@@ -611,4 +612,59 @@ export const adminCreateKcEdge = asyncHandler(async (req: Request, res: Response
 export const adminDeleteKcEdge = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
   res.status(200).json(ok(await kcService.deleteEdge(id, req.institutionId)));
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Blogs — staff-written long-form for the campus feed (admin-only)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const createBlogSchema = z.object({
+  title:           z.string().min(3).max(200),
+  body:            z.string().min(20),
+  excerpt:         z.string().max(400).optional(),
+  category:        z.string().max(60).optional(),
+  cover_image_url: z.string().url().optional(),
+  publish:         z.boolean().default(false),
+});
+
+export const adminListBlogs = asyncHandler(async (req: Request, res: Response) => {
+  res.status(200).json(ok(await blogService.listBlogs(req.institutionId)));
+});
+
+export const adminCreateBlog = asyncHandler(async (req: Request, res: Response) => {
+  const body = createBlogSchema.parse(req.body);
+  const blog = await blogService.createBlog({
+    institutionId: req.institutionId,
+    createdBy:     req.user.id,
+    title:         body.title,
+    body:          body.body,
+    excerpt:       body.excerpt,
+    category:      body.category,
+    coverImageUrl: body.cover_image_url,
+    publish:       body.publish,
+  });
+  res.status(201).json(ok(blog));
+});
+
+export const adminUpdateBlog = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const patch = createBlogSchema.partial().omit({ publish: true }).parse(req.body);
+  const blog = await blogService.updateBlog(id, req.institutionId, {
+    title:         patch.title,
+    body:          patch.body,
+    excerpt:       patch.excerpt,
+    category:      patch.category,
+    coverImageUrl: patch.cover_image_url,
+  });
+  res.status(200).json(ok(blog));
+});
+
+export const adminPublishBlog = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  res.status(200).json(ok(await blogService.publishBlog(id, req.institutionId)));
+});
+
+export const adminDeleteBlog = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  res.status(200).json(ok(await blogService.deleteBlog(id, req.institutionId)));
 });

@@ -21,6 +21,7 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
+    "seed:feed": "ts-node -r tsconfig-paths/register prisma/seed-feed.ts",
     "db:studio": "prisma studio",
     "workers:start": "ts-node -r tsconfig-paths/register src/jobs/workers/index.ts"
   },

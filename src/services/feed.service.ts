@@ -8,54 +8,122 @@ import prisma from '@config/database';
 import logger from '@lib/logger';
 import type { Types } from 'mongoose';
 
-// ─── Cursor-Based Feed (institution-wide + achievements + admin news) ──────────
+// ─── Cursor-Based Feed (student posts + campus events + staff blogs) ──────────
 
+/**
+ * A feed row. `kind` is the discriminator the client switches on — a student
+ * post, a campus event, or a staff-written blog.
+ */
+export interface FeedItem extends Record<string, unknown> {
+  kind: 'post' | 'event' | 'blog';
+  id: string;
+  /** Sort key across all three sources. */
+  created_at: Date;
+}
+
+/**
+ * Campus events and blogs live in Postgres while student posts live in Mongo, so
+ * the feed cannot be one query. Each source is fetched newest-first up to the
+ * page size, merged, and re-sorted by time — the cursor is therefore a TIMESTAMP
+ * rather than the old Mongo ObjectId, because an ObjectId cannot address a row
+ * in another datastore.
+ *
+ * Over-fetching by `limit` per source is deliberate: after the merge only the
+ * first `limit` survive, and each source must be able to supply the whole page
+ * on its own (a day when staff post ten blogs and nobody posts anything else).
+ */
 export async function getFeed(
   userId:        string,
   institutionId: string,
-  cursor?:       string,   // ObjectId string; paginate backwards from here
+  cursor?:       string,   // ISO timestamp; paginate backwards from here
   limit:         number = 10,
-): Promise<{ items: Record<string, unknown>[]; next_cursor: string | null }> {
-  const query: Record<string, unknown> = {
+): Promise<{ items: FeedItem[]; next_cursor: string | null }> {
+  const before = cursor ? new Date(cursor) : null;
+  const beforeValid = before && !Number.isNaN(before.getTime()) ? before : null;
+
+  const postQuery: Record<string, unknown> = {
     institution_id: institutionId,
     is_deleted:     false,
   };
+  if (beforeValid) postQuery['createdAt'] = { $lt: beforeValid };
 
-  // Cursor pagination — go backwards from cursor ObjectId (meaning older posts)
-  if (cursor) {
-    query['_id'] = { $lt: cursor };
-  }
+  const [posts, events, blogs] = await Promise.all([
+    Post.find(postQuery).sort({ createdAt: -1 }).limit(limit + 1).lean(),
+    prisma.event.findMany({
+      where: {
+        institution_id: institutionId,
+        status:         'published',
+        ...(beforeValid ? { published_at: { lt: beforeValid } } : {}),
+      },
+      orderBy: { published_at: 'desc' },
+      take:    limit + 1,
+    }),
+    prisma.blog.findMany({
+      where: {
+        institution_id: institutionId,
+        status:         'published',
+        ...(beforeValid ? { published_at: { lt: beforeValid } } : {}),
+      },
+      orderBy: { published_at: 'desc' },
+      take:    limit + 1,
+    }),
+  ]);
 
-  const posts = await Post.find(query)
-    .sort({ _id: -1 })   // newest first
-    .limit(limit + 1)    // fetch one extra to determine hasMore
-    .lean();
-
-  const hasMore = posts.length > limit;
-  const items   = hasMore ? posts.slice(0, limit) : posts;
-
-  // 3. Batch-fetch author profiles
-  const authorIdSet = [...new Set(items.map((p) => p.author_id))];
+  // Author profiles for the student posts only — events and blogs are written by
+  // the institution, and are labelled as such rather than by a staff member's name.
+  const authorIdSet = [...new Set(posts.map((p) => p.author_id))];
   const authors = await prisma.user.findMany({
     where:  { id: { in: authorIdSet } },
     select: { id: true, full_name: true, avatar_url: true, faculty: true },
   });
-  const authorMap = new Map(authors.map((a: { id: string; full_name: string | null; avatar_url: string | null; faculty?: string | null }) => [a.id, a]));
+  const authorMap = new Map(authors.map((a) => [a.id, a]));
 
-  // 4. Enrich with like status + count
-  const enriched = items.map((p) => ({
+  const postItems: FeedItem[] = posts.map((p) => ({
     ...p,
-    id:          (p._id).toString(),
+    kind:        'post',
+    id:          p._id.toString(),
+    created_at:  p.createdAt,
     author:      authorMap.get(p.author_id) ?? null,
-    is_liked:    (p.likes).includes(userId),
-    likes_count: (p.likes).length,
+    is_liked:    p.likes.includes(userId),
+    likes_count: p.likes.length,
   }));
 
-  const nextCursor = hasMore
-    ? (items[items.length - 1]._id).toString()
-    : null;
+  const eventItems: FeedItem[] = events.map((e) => ({
+    kind:            'event',
+    id:              e.id,
+    created_at:      e.published_at ?? e.created_at,
+    title:           e.title,
+    description:     e.description,
+    event_date:      e.event_date,
+    location:        e.location,
+    cover_image_url: e.cover_image_url,
+    is_urgent:       e.is_urgent,
+  }));
 
-  return { items: enriched, next_cursor: nextCursor };
+  const blogItems: FeedItem[] = blogs.map((b) => ({
+    kind:            'blog',
+    id:              b.id,
+    created_at:      b.published_at ?? b.created_at,
+    title:           b.title,
+    excerpt:         b.excerpt,
+    body:            b.body,
+    category:        b.category,
+    cover_image_url: b.cover_image_url,
+  }));
+
+  const merged = [...postItems, ...eventItems, ...blogItems].sort(
+    (a, b) => b.created_at.getTime() - a.created_at.getTime(),
+  );
+
+  const hasMore = merged.length > limit;
+  const items   = merged.slice(0, limit);
+
+  // The cursor is the last item's timestamp, so the next page continues from the
+  // merged stream rather than from any one source's position.
+  const last = items[items.length - 1];
+  const nextCursor = hasMore && last ? last.created_at.toISOString() : null;
+
+  return { items, next_cursor: nextCursor };
 }
 
 // ─── Trending Topics (Redis-cached 1 hour) ─────────────────────────────────────
@@ -378,23 +446,10 @@ export async function reportPost(
   return { reported: true, report_count: reportCount };
 }
 
-// ─── Create Achievement Post (auto-called from gamification) ──────────────────
-
-export async function createAchievementPost(
-  authorId:      string,
-  institutionId: string,
-  badgeName:     string,
-  badgeCode:     string,
-) {
-  await Post.create({
-    institution_id: institutionId,
-    author_id:      authorId,
-    type:           'achievement',
-    content:        `🏅 Earned the "${badgeName}" badge!`,
-    topic_tag:      'achievement',
-  });
-  logger.debug({ authorId, badgeCode }, 'Achievement post created');
-}
+// Achievement auto-posting was REMOVED: every badge unlock wrote a "🏅 Earned
+// the X badge!" post nobody composed, which buried the posts students actually
+// wrote. Badges are celebrated in the unlock modal and kept on the profile.
+// Historical achievement posts are left in place — they are real feed history.
 
 export const feedService = {
   getFeed,
@@ -406,5 +461,4 @@ export const feedService = {
   createComment,
   getPostComments,
   reportPost,
-  createAchievementPost,
 };

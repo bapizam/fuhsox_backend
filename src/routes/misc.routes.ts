@@ -16,6 +16,7 @@ import {
   getLeaderboard,
   getNews,
   getNewsById,
+  getBlogById,
   getEvents,
 } from '@controllers/controllers';
 
@@ -82,3 +83,12 @@ export const eventsRouter = Router();
 eventsRouter.use(authenticate, scopeToInstitution);
 
 eventsRouter.get('/', getEvents);
+
+/**
+ * Blogs are READ here and written only through the admin routes. The feed
+ * carries the card; this serves the full body when a student taps it.
+ */
+export const blogsRouter = Router();
+blogsRouter.use(authenticate, scopeToInstitution);
+
+blogsRouter.get('/:id', getBlogById);

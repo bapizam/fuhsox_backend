@@ -32,6 +32,7 @@ model Institution {
   events      Event[]
   broadcasts  Broadcast[]
   news        NewsArticle[]
+  blogs       Blog[]
   study_rooms StudyRoom[]
 
   @@map("institutions")
@@ -528,6 +529,34 @@ enum NewsStatus {
   draft
   scheduled
   published
+}
+
+/// A long-form post written by staff and shown in the campus feed.
+///
+/// Distinct from `NewsArticle` (which is the Home tab's news library) and from a
+/// student `Post` in Mongo: a blog is authored content that belongs in the feed
+/// alongside events, so students meet it where they already are rather than in a
+/// section they have to remember to visit. Only admins can create one.
+model Blog {
+  id              String     @id @default(uuid())
+  institution_id  String
+  created_by      String // admin user_id
+  title           String
+  /// Short standfirst shown on the feed card; the body opens on tap.
+  excerpt         String?    @db.Text
+  body            String     @db.Text
+  cover_image_url String?
+  /// Free-text label ("Study tips", "Campus life") shown as a chip.
+  category        String?
+  status          NewsStatus @default(draft)
+  published_at    DateTime?
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  institution Institution @relation(fields: [institution_id], references: [id])
+
+  @@index([institution_id, published_at])
+  @@map("blogs")
 }
 
 model AIUsageLog {

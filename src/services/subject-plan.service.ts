@@ -133,7 +133,72 @@ export async function generateSubjectPlan(params: {
     'Subject study plan generated',
   );
 
+  // Pre-build objectives for the scheduled chapters IN THE BACKGROUND, so the
+  // student never meets "build objectives" as a chore and the first Verify tap
+  // is instant. Not awaited: each chapter is its own AI call, and making the
+  // plan request carry six of them would take minutes and risk the gateway
+  // timeout. Bounded and best-effort — whatever isn't built here is built on
+  // demand by node-check, exactly as before.
+  void prebuildScheduledObjectives({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    weeks,
+  });
+
   return saved;
+}
+
+/**
+ * Chapters in the order the plan first schedules them — the order the student
+ * will actually reach them, which is what makes an early budget cut-off safe.
+ */
+function scheduledNodeOrder(weeks: ISubjectPlanWeek[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const week of weeks) {
+    for (const day of week.days) {
+      for (const task of day.tasks) {
+        if (!seen.has(task.node_id)) {
+          seen.add(task.node_id);
+          ordered.push(task.node_id);
+        }
+      }
+    }
+  }
+  return ordered;
+}
+
+/**
+ * At most this many chapters are pre-built per plan generation. Each is one AI
+ * call against the shared 20/day budget, and the plan itself just spent one —
+ * an uncapped pre-build of a 14-chapter book would torch the student's whole
+ * day. Chapters beyond the cap build on first verify instead.
+ */
+const PREBUILD_MAX_CHAPTERS = 6;
+
+async function prebuildScheduledObjectives(params: {
+  userId:        string;
+  institutionId: string;
+  weeks:         ISubjectPlanWeek[];
+}): Promise<void> {
+  const { generateObjectivesForNode } = await import('@services/learning.service');
+
+  for (const nodeId of scheduledNodeOrder(params.weeks).slice(0, PREBUILD_MAX_CHAPTERS)) {
+    try {
+      // Returns the cached rows untouched when the chapter already has
+      // objectives, so re-planning a studied book costs nothing here.
+      await generateObjectivesForNode({
+        nodeId,
+        userId:        params.userId,
+        institutionId: params.institutionId,
+      });
+    } catch (err) {
+      // Budget spent or provider down — stop entirely rather than hammering a
+      // wall five more times. Everything left builds on demand.
+      logger.info({ err, nodeId }, 'Objective pre-build stopped; remaining chapters build on demand');
+      return;
+    }
+  }
 }
 
 /** The live plan for one resource, or null when none has been generated. */

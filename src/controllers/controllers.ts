@@ -851,6 +851,16 @@ export const getNewsById = asyncHandler(async (req: Request, res: Response) => {
   res.status(200).json(ok(article));
 });
 
+/** One published blog, in full. Students read; only admins write. */
+export const getBlogById = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const blog = await prisma.blog.findFirst({
+    where: { id, institution_id: req.institutionId, status: 'published' },
+  });
+  if (!blog) throw new AppError(404, 'NOT_FOUND', 'That post is no longer here');
+  res.status(200).json(ok(blog));
+});
+
 export const getEvents = asyncHandler(async (req: Request, res: Response) => {
   // Audience filter (M5): publish-time notifications were already faculty/
   // department-targeted, but this list returned every published event. Match

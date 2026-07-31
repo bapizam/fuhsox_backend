@@ -16,6 +16,7 @@ import {
   studyRouter,
   leaderboardRouter,
   newsRouter,
+  blogsRouter,
   eventsRouter,
 } from './misc.routes';
 import { getQueueStats } from '@jobs/queues';
@@ -68,6 +69,7 @@ router.use('/leaderboard', leaderboardRouter);
 
 // ─── Institution Content ──────────────────────────────────────────────────────
 router.use('/news', newsRouter);
+router.use('/blogs', blogsRouter);
 router.use('/events', eventsRouter);
 
 // ─── Admin Panel ──────────────────────────────────────────────────────────────

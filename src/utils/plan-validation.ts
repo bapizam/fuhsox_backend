@@ -82,12 +82,39 @@ export interface ValidatedPlan {
  * about an empty result, because "the model produced nothing usable" is a
  * different problem from "the model produced a slightly thin plan".
  */
+/**
+ * `YYYY-MM-DD` as a day number, or null when it is not a usable date.
+ *
+ * Compared as calendar days rather than timestamps so "today" is never dropped
+ * for being a few hours old.
+ */
+function dayNumber(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+  if (!match) return null;
+  const [, y, m, d] = match;
+  const time = Date.UTC(Number(y), Number(m) - 1, Number(d));
+  return Number.isFinite(time) ? Math.floor(time / 86400000) : null;
+}
+
 export function validateResourcePlan(
   raw: unknown,
   allowedNodeIds: Iterable<string>,
+  /**
+   * Days before this are dropped. The model is told week 1 starts today, but
+   * told is not the same as done: given a mid-week start it lays the week out
+   * Monday-to-Sunday and schedules days that have already passed, which is how a
+   * plan generated on a Friday came back telling the student to study Thursday.
+   * Omit to keep every day regardless of date.
+   */
+  startDate?: Date,
 ): ValidatedPlan {
   const allowed = new Set(allowedNodeIds);
   const reasons = new Set<string>();
+  const startDay = startDate ? Math.floor(Date.UTC(
+    startDate.getUTCFullYear(),
+    startDate.getUTCMonth(),
+    startDate.getUTCDate(),
+  ) / 86400000) : null;
   let dropped = 0;
   let taskCount = 0;
 
@@ -114,6 +141,17 @@ export function validateResourcePlan(
         dropped += 1;
         reasons.add('malformed day');
         continue;
+      }
+
+      // A day in the past cannot be studied. Only drop when the date actually
+      // parses — an unrecognised format is left alone rather than binned.
+      if (startDay !== null && day.data.date) {
+        const parsed = dayNumber(day.data.date);
+        if (parsed !== null && parsed < startDay) {
+          dropped += 1;
+          reasons.add('day was scheduled in the past');
+          continue;
+        }
       }
 
       const tasks: ValidatedTask[] = [];

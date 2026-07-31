@@ -3,7 +3,6 @@ import { calculateSessionXP, earnsRewards, evaluateStreak } from '@utils/xp';
 import type { QuizSession, SessionAnswer, User, Badge } from '@typings/models';
 import { notificationService } from './notification.service';
 import logger from '@lib/logger';
-import { feedService } from './feed.service';
 
 // ─── Badge Rules ───────────────────────────────────────────────────────────────
 
@@ -167,10 +166,10 @@ async function checkAndAwardBadges(
     newlyEarned.push(badge);
     logger.info({ userId: user.id, badge: rule.code }, 'Badge awarded');
 
-    // Auto-create achievement post in the social feed
-    feedService.createAchievementPost(
-      user.id, user.institution_id, badge.name, badge.code,
-    ).catch(() => {/* non-critical — don't fail session completion if feed post fails */});
+    // Deliberately NOT posted to the campus feed. Every badge auto-posting made
+    // the feed a wall of "🏅 Earned the X badge!" that nobody wrote and nobody
+    // read, drowning the posts students actually composed. The unlock is
+    // celebrated where it happens — the badge modal — and lives on the profile.
   }
 
   return newlyEarned;
