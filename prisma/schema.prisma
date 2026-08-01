@@ -822,6 +822,21 @@ model LearningObjective {
   /// refinement, descoped on purpose rather than silently.
   kc_id String?
 
+  /// The slice of the chapter this objective covers, when the chapter is read
+  /// over several sittings.
+  ///
+  /// A 40-page chapter is not one evening's work, so the planner splits it — and
+  /// once it does, a chapter-wide check asks about pages the student has not
+  /// opened yet. An objective scoped to pp. 53–66 is generated from, and tested
+  /// on, exactly those pages.
+  ///
+  /// Null means the whole chapter, which is what every objective created before
+  /// this was and what a chapter-level check still creates. Read paths treat null
+  /// exactly as they always did — the same compatibility story the FSRS and KC
+  /// columns above tell.
+  page_start Int?
+  page_end   Int?
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 

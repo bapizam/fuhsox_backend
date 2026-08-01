@@ -8,21 +8,25 @@ import prisma from '@config/database';
 import logger from '@lib/logger';
 import type { Types } from 'mongoose';
 
-// ─── Cursor-Based Feed (student posts + campus events + staff blogs) ──────────
+// ─── Cursor-Based Feed (student posts + events + blogs + news) ────────────────
 
 /**
  * A feed row. `kind` is the discriminator the client switches on — a student
- * post, a campus event, or a staff-written blog.
+ * post, or one of the three things staff publish.
+ *
+ * The three staff kinds are rendered identically by the client (one article card
+ * with an optional cover image, opening a full read): from a student's side they
+ * are all "something the school wrote", and only the label differs.
  */
 export interface FeedItem extends Record<string, unknown> {
-  kind: 'post' | 'event' | 'blog';
+  kind: 'post' | 'event' | 'blog' | 'news';
   id: string;
-  /** Sort key across all three sources. */
+  /** Sort key across all four sources. */
   created_at: Date;
 }
 
 /**
- * Campus events and blogs live in Postgres while student posts live in Mongo, so
+ * Events, blogs and news live in Postgres while student posts live in Mongo, so
  * the feed cannot be one query. Each source is fetched newest-first up to the
  * page size, merged, and re-sorted by time — the cursor is therefore a TIMESTAMP
  * rather than the old Mongo ObjectId, because an ObjectId cannot address a row
@@ -47,7 +51,7 @@ export async function getFeed(
   };
   if (beforeValid) postQuery['createdAt'] = { $lt: beforeValid };
 
-  const [posts, events, blogs] = await Promise.all([
+  const [posts, events, blogs, news] = await Promise.all([
     Post.find(postQuery).sort({ createdAt: -1 }).limit(limit + 1).lean(),
     prisma.event.findMany({
       where: {
@@ -59,6 +63,15 @@ export async function getFeed(
       take:    limit + 1,
     }),
     prisma.blog.findMany({
+      where: {
+        institution_id: institutionId,
+        status:         'published',
+        ...(beforeValid ? { published_at: { lt: beforeValid } } : {}),
+      },
+      orderBy: { published_at: 'desc' },
+      take:    limit + 1,
+    }),
+    prisma.newsArticle.findMany({
       where: {
         institution_id: institutionId,
         status:         'published',
@@ -111,7 +124,22 @@ export async function getFeed(
     cover_image_url: b.cover_image_url,
   }));
 
-  const merged = [...postItems, ...eventItems, ...blogItems].sort(
+  // News keeps its own Home-tab library (pinning, pagination) — this is an
+  // additional surface for it, not a replacement, and the shape is normalised to
+  // the blog's so the client can render one article card for all three.
+  const newsItems: FeedItem[] = news.map((n) => ({
+    kind:            'news',
+    id:              n.id,
+    created_at:      n.published_at ?? n.created_at,
+    title:           n.title,
+    excerpt:         null,
+    body:            n.html_body,
+    category:        n.category,
+    cover_image_url: n.cover_image_url,
+    is_pinned:       n.is_pinned,
+  }));
+
+  const merged = [...postItems, ...eventItems, ...blogItems, ...newsItems].sort(
     (a, b) => b.created_at.getTime() - a.created_at.getTime(),
   );
 

@@ -7,6 +7,7 @@ import { incrWithExpiry, getCount, getEndOfDayTTL, getTodayWAT } from '@lib/redi
 import { AppError, type GeneratedQuestion, type AIGenerationResult } from '@typings/models';
 import { partitionValidItems, validateGeneratedItem, type RawItem } from '@utils/item-validation';
 import { validateResourcePlan, type ValidatedPlan } from '@utils/plan-validation';
+import { buildOutlineSource, type OutlineSourcePage } from '@utils/outline-source';
 import { retrieveChunksForQueries } from '@lib/retrieval';
 import {
   describeChoice,
@@ -832,14 +833,24 @@ function parseJSONResponse<T>(text: string, what: string): T {
 /**
  * Chapter/section structure from a document's text. ONE call per resource —
  * `learning.service` caches the result as SyllabusNode rows and never re-asks.
+ *
+ * `pages` matters more than it looks: without it this sees only the head of the
+ * document, and a twenty-chapter textbook comes back with the few chapters that
+ * fit — the "only eight chapters appear" bug. See `utils/outline-source` for how
+ * the contents page and the per-page heading zones are sampled instead.
  */
 export async function extractSyllabusStructure(params: {
   text:          string;
+  /** Per-page text when the caller extracted a PDF. Absent = plain head slice. */
+  pages?:        OutlineSourcePage[];
   title:         string;
   userId:        string;
   institutionId: string;
 }): Promise<{ title: string; sections?: string[] }[]> {
   await consumeAIBudget(params.userId, params.institutionId);
+
+  const source = buildOutlineSource({ text: params.text, pages: params.pages });
+  const paged = (params.pages?.length ?? 0) > 0;
 
   const response = await callAI({
     system:   SYLLABUS_SYSTEM_PROMPT,
@@ -851,11 +862,25 @@ Return ONLY JSON: { "chapters": [{ "title": "...", "sections": ["...", "..."] }]
 Use the document's own chapter titles. Omit "sections" when a chapter has none.
 If the text has no discernible chapter structure, return { "chapters": [] }.
 
+List EVERY chapter the document has, in the order it presents them — a textbook
+with thirty chapters must return thirty. Do not stop early and do not summarise.
+${
+  paged
+    ? `The text below is marked up with "--- page N ---" separators, and is a SAMPLE:
+the opening pages in full (where a contents page usually lives), then the top of
+each later page (where a chapter title sits). Those separators are not part of any
+title. Where a contents page lists chapters you cannot see the body of, trust it —
+those chapters are real.`
+    : ''
+}
+
 TEXT:
-${params.text.substring(0, 15000)}`,
+${source}`,
       },
     ],
-    max_tokens: 4096,
+    // 4096 truncated the JSON for any book with more than ~25 chapters, and a
+    // truncated response fails to parse rather than degrading.
+    max_tokens: 8192,
   });
 
   const parsed = parseJSONResponse<{ chapters?: { title?: unknown; sections?: unknown }[] }>(
@@ -906,6 +931,12 @@ export async function generateLearningObjectives(params: {
   subject:         string;
   /** Retrieved passages from the chapter; empty = ungrounded fallback. */
   groundingChunks?: string[];
+  /**
+   * Set when the objectives cover ONE sitting of a chapter rather than all of
+   * it. The passages are already narrowed to those pages — this tells the model
+   * to stay inside them and not reach for the rest of the chapter it half-knows.
+   */
+  pageRange?:      { start: number; end?: number };
   userId:          string;
   institutionId:   string;
 }): Promise<{ statement: string; bloom_level: BloomLevelName }[]> {
@@ -913,16 +944,22 @@ export async function generateLearningObjectives(params: {
 
   const ctx = await getLearnerContext(params.userId, params.institutionId);
   const grounding = groundingBlock((params.groundingChunks ?? []).map((text) => ({ text })));
+  const scope = params.pageRange
+    ? ` — specifically pages ${params.pageRange.start}${
+        params.pageRange.end ? `–${params.pageRange.end}` : ' onward'
+      } of it, which is the part the student has just read`
+    : '';
 
   const response = await callAI({
     system:   withDiscipline(ctx, OBJECTIVES_SYSTEM_PROMPT),
     messages: [
       {
         role: 'user',
-        content: `Write 4-7 learning objectives for the chapter "${params.chapterTitle}" from "${params.resourceTitle}" (subject: ${params.subject}).
+        content: `Write 4-7 learning objectives for the chapter "${params.chapterTitle}" from "${params.resourceTitle}" (subject: ${params.subject})${scope}.
 Each objective must be specific enough that a short exam question could prove it.
 Spread them across Bloom levels, always including at least one at "apply" or above.${grounding}
 ${grounding ? 'Base every objective on the passages above — reflect what THIS chapter actually covers.' : ''}
+${scope ? 'Cover ONLY that part. An objective about material further on in the chapter would test the student on pages they have not opened yet.' : ''}
 Return ONLY JSON:
 { "objectives": [{ "statement": "...", "bloom_level": "remember|understand|apply|analyze|evaluate|create" }] }`,
       },
@@ -1262,9 +1299,10 @@ export async function generateMasteryQuestions(params: {
 const RESOURCE_PLAN_SYSTEM_PROMPT = `You are an expert academic coach building a study plan from ONE book the student owns.
 Every task you write must name a chapter by its exact node_id from the list you are given — never invent a chapter, never write a topic in free text.
 Schedule the chapters the student is weakest on EARLIEST and revisit them; do not simply walk the book front to back.
-Each chapter should be read before it is practised, and verified only after both.
+A long chapter is read over several sittings: set "parts" to how many sittings it takes and "part" to which one this task is. A chapter read in one go is part 1 of 1. NEVER write page numbers — they are computed from the book itself.
+Every "read" task is followed by a "verify" task on the SAME DAY with the same node_id, the same part and the same parts, so the student proves what they just read while it is fresh.
 CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
-JSON format strictly: { "weeks": [{ "week_number": number, "days": [{ "day": string, "date": "YYYY-MM-DD", "tasks": [{ "node_id": string, "activity": "read"|"practice"|"verify", "duration_mins": number, "detail": string }] }] }], "milestones": [string] }`;
+JSON format strictly: { "weeks": [{ "week_number": number, "days": [{ "day": string, "date": "YYYY-MM-DD", "tasks": [{ "node_id": string, "activity": "read"|"practice"|"verify", "part": number, "parts": number, "duration_mins": number, "detail": string }] }] }], "milestones": [string] }`;
 
 /**
  * Chapters plus everything known about where this student stands in them.
@@ -1298,12 +1336,12 @@ async function gatherResourceGrounding(params: {
     }),
     prisma.chapterPlacement.findMany({
       where:  { user_id: params.userId, resource_id: params.resourceId },
-      select: { node_id: true, correct: true },
+      select: { node_id: true, correct: true, confidence: true },
     }),
   ]);
 
   const now = new Date();
-  const placementByNode = new Map(placements.map((p) => [p.node_id, p.correct]));
+  const placementByNode = new Map(placements.map((p) => [p.node_id, p]));
 
   // Mastery per chapter, from the objectives that belong to it.
   const objectivesByNode = new Map<string, typeof objectives>();
@@ -1333,10 +1371,32 @@ async function gatherResourceGrounding(params: {
         label: `studied — ${verified}/${owned.length} objectives verified, mastery ${Math.round(mean * 100)}%`,
       };
     }
+    /**
+     * One item is a thin signal, so the student's own 1–5 rating is used to
+     * separate the two cases the binary cannot: **right but guessing** is not a
+     * chapter to skip, and **wrong but sure** is a misconception, which is worse
+     * than not knowing and belongs at the very front of the plan.
+     *
+     * The nudges stay small and the label keeps saying "rough signal" — this is
+     * still one question, and placement is still kept out of the learner model
+     * entirely.
+     */
     const placed = placementByNode.get(nodeId);
-    if (placed === true)  return { score: 0.7, label: 'placement: answered correctly (rough signal, one question)' };
-    if (placed === false) return { score: 0.15, label: 'placement: answered incorrectly (rough signal, one question)' };
-    return { score: 0.5, label: 'not yet measured' };
+    if (!placed) return { score: 0.5, label: 'not yet measured' };
+
+    const sure = typeof placed.confidence === 'number' ? placed.confidence >= 4 : null;
+    const shaky = typeof placed.confidence === 'number' ? placed.confidence <= 2 : null;
+
+    if (placed.correct) {
+      if (shaky) {
+        return { score: 0.5, label: 'placement: got it right but was unsure (rough signal, one question)' };
+      }
+      return { score: 0.7, label: 'placement: answered correctly (rough signal, one question)' };
+    }
+    if (sure) {
+      return { score: 0.05, label: 'placement: got it wrong while confident — likely a misconception (rough signal)' };
+    }
+    return { score: 0.15, label: 'placement: answered incorrectly (rough signal, one question)' };
   };
 
   const lines: string[] = ['Chapters in this book, with where the student stands:'];
@@ -1368,9 +1428,15 @@ export interface ResourcePlanInput {
   resourceTitle: string;
   examDate:      Date | null;
   dailyHours:    number;
+  /** Weekdays the student agreed to study, `0` = Sunday. Never empty. */
+  studyDays:     number[];
   userId:        string;
   institutionId: string;
 }
+
+const WEEKDAY_NAMES = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+] as const;
 
 /**
  * Generate a study plan for ONE resource.
@@ -1425,6 +1491,10 @@ export async function generateResourcePlan(
   const todayISO = today.toISOString().split('T')[0] ?? '';
   const todayName = today.toLocaleDateString('en-GB', { weekday: 'long' });
 
+  const studyDayNames = params.studyDays
+    .map((d) => WEEKDAY_NAMES[d])
+    .filter((name): name is (typeof WEEKDAY_NAMES)[number] => !!name);
+
   const prompt = `Build a ${weeksLeft}-week study plan for "${params.resourceTitle}" (subject: ${params.subject}).
 
 ${
@@ -1434,6 +1504,7 @@ ${
 }
 Available study hours per day: ${params.dailyHours}
 TODAY is ${todayISO} (${todayName}). Week 1 starts TODAY.
+The student studies on these days only: ${studyDayNames.join(', ')}.
 
 ${grounding.lines.join('\n')}
 ${weakDetail ? `\nWhat those weak chapters actually cover:\n${weakDetail}\n` : ''}
@@ -1443,7 +1514,14 @@ Rules:
   passed. Week 1 runs from ${todayISO} forward — if today is a Friday, week 1 starts on
   that Friday, it does NOT start on the Monday just gone.
 - "date" is ISO YYYY-MM-DD and "day" is its weekday name; they must agree.
+- **Only schedule days that fall on: ${studyDayNames.join(', ')}.** Skip every other
+  weekday entirely — do not shorten those days, omit them.
 - Do not exceed ${params.dailyHours} hours of tasks on any single day.
+- Split a chapter that does not fit one day's hours across consecutive study days
+  using "part" and "parts". Judge it by the chapter's page range, which is listed
+  above — roughly 12–20 pages an hour of reading.
+- Every "read" task is followed on the SAME DAY by a "verify" task with the same
+  node_id, "part" and "parts".
 - "detail" is ONE sentence saying what to do — no page numbers, they are added automatically.
 - Front-load the weakest chapters and come back to them; a chapter the student has
   already verified needs revision, not a full re-read.
@@ -1471,7 +1549,8 @@ Format as the specified JSON.`;
     return parseJSONResponse<Record<string, unknown>>(response.text, 'resource study plan');
   };
 
-  const first = validateResourcePlan(await request(), grounding.nodeIds, today);
+  const constraints = { startDate: today, studyDays: params.studyDays };
+  const first = validateResourcePlan(await request(), grounding.nodeIds, constraints);
 
   if (first.taskCount > 0) {
     if (first.dropped > 0) {
@@ -1493,10 +1572,11 @@ Format as the specified JSON.`;
     await request(
       `Your previous attempt produced no usable tasks (${first.reasons.join('; ')}). ` +
         'Every task MUST copy a node_id exactly as listed, set "activity" to read, practice or ' +
-        `verify, and use a "date" of ${todayISO} or later.`,
+        `verify, and use a "date" of ${todayISO} or later that falls on one of: ` +
+        `${studyDayNames.join(', ')}.`,
     ),
     grounding.nodeIds,
-    today,
+    constraints,
   );
 
   if (repaired.taskCount === 0) {

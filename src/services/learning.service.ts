@@ -190,6 +190,12 @@ export async function extractSyllabus(params: {
   userId:        string;
   institutionId: string;
   text:          string;
+  /**
+   * Per-page text, when the caller has it. Without it the extractor only sees
+   * the head of the document and a long book loses its later chapters — see
+   * `utils/outline-source`.
+   */
+  pages?:        PdfPage[];
 }) {
   const resource = await ownedResource(params.resourceId, params.userId);
 
@@ -199,6 +205,7 @@ export async function extractSyllabus(params: {
   try {
     const chapters = await aiService.extractSyllabusStructure({
       text:          params.text,
+      pages:         params.pages,
       title:         resource.title,
       userId:        params.userId,
       institutionId: params.institutionId,
@@ -283,7 +290,7 @@ export async function extractSyllabusFromFile(params: {
     logger.warn({ err, resourceId: params.resourceId }, 'Resource chunk ingestion failed (non-fatal)');
   });
 
-  const nodes = await extractSyllabus({ ...params, text });
+  const nodes = await extractSyllabus({ ...params, text, pages });
 
   // Locate each chapter in the page texts so tasks can cite page ranges. Purely
   // deterministic (no AI call), and best-effort: a title the extractor invented
@@ -381,6 +388,13 @@ export async function generateObjectivesForNode(params: {
   nodeId:        string;
   userId:        string;
   institutionId: string;
+  /**
+   * The slice of the chapter to build objectives for, when it is read over
+   * several sittings. Omit for the whole chapter — which is what every objective
+   * created before this was, and what a chapter-level check still asks for.
+   */
+  pageStart?:    number | null;
+  pageEnd?:      number | null;
 }) {
   const node = await prisma.syllabusNode.findFirst({
     where:   { id: params.nodeId },
@@ -390,8 +404,19 @@ export async function generateObjectivesForNode(params: {
     throw new AppError(404, 'NOT_FOUND', 'Chapter not found');
   }
 
+  // A window is part of the objective's identity: the second sitting of a
+  // chapter must find its OWN objectives, not the first sitting's, or the split
+  // buys nothing.
+  const scoped = typeof params.pageStart === 'number';
+  const where = {
+    node_id:    params.nodeId,
+    user_id:    params.userId,
+    page_start: scoped ? params.pageStart : null,
+    page_end:   scoped ? (params.pageEnd ?? null) : null,
+  };
+
   const existing = await prisma.learningObjective.findMany({
-    where:   { node_id: params.nodeId, user_id: params.userId },
+    where,
     orderBy: { created_at: 'asc' },
   });
   if (existing.length > 0) return existing;
@@ -401,8 +426,19 @@ export async function generateObjectivesForNode(params: {
   // Ground objectives in the chapter's actual content when the resource was
   // ingested (reformation Phase 1). Retrieval returns [] for a manually-typed
   // outline or an un-ingested resource, so generation cleanly falls back to
-  // title-only.
-  const grounding = await retrieveChunks(node.resource_id, node.title, 6).catch(() => []);
+  // title-only. With a window it draws only from those pages — and falls back to
+  // the whole chapter rather than nothing when the book has no page data.
+  const grounding = await retrieveChunks(
+    node.resource_id,
+    node.title,
+    6,
+    scoped
+      ? {
+          page_start: params.pageStart as number,
+          ...(typeof params.pageEnd === 'number' ? { page_end: params.pageEnd } : {}),
+        }
+      : undefined,
+  ).catch(() => []);
 
   const drafted = await aiService.generateLearningObjectives({
     chapterTitle:   node.title,
@@ -411,6 +447,14 @@ export async function generateObjectivesForNode(params: {
     groundingChunks: grounding.map((g) => g.text),
     userId:         params.userId,
     institutionId:  params.institutionId,
+    ...(scoped
+      ? {
+          pageRange: {
+            start: params.pageStart as number,
+            ...(typeof params.pageEnd === 'number' ? { end: params.pageEnd } : {}),
+          },
+        }
+      : {}),
   });
 
   if (drafted.length === 0) {
@@ -425,11 +469,14 @@ export async function generateObjectivesForNode(params: {
       subject,
       statement:   objective.statement,
       bloom_level: objective.bloom_level,
+      ...(scoped
+        ? { page_start: params.pageStart as number, page_end: params.pageEnd ?? null }
+        : {}),
     })),
   });
 
   return prisma.learningObjective.findMany({
-    where:   { node_id: params.nodeId, user_id: params.userId },
+    where,
     orderBy: { created_at: 'asc' },
   });
 }
@@ -535,6 +582,9 @@ async function ensureQuestionPool(params: {
   /** Set for chapter objectives; null for topic (plan-task) objectives. Enables
    *  grounding the pool in the resource's content. */
   resourceId:    string | null;
+  /** The objective's own page window, when it covers one sitting of a chapter. */
+  pageStart:     number | null;
+  pageEnd:       number | null;
   userId:        string;
   institutionId: string;
   /** Ids already answered — drives lazy growth. */
@@ -550,9 +600,21 @@ async function ensureQuestionPool(params: {
     return cached;
   }
 
-  // Ground the pool in the objective's source material when available (P1).
+  // Ground the pool in the objective's source material when available (P1),
+  // narrowed to the objective's own pages when it has them — so a check on the
+  // second sitting of a chapter cannot pull questions from the first.
   const grounding = params.resourceId
-    ? await retrieveChunks(params.resourceId, params.statement, 6).catch(() => [])
+    ? await retrieveChunks(
+        params.resourceId,
+        params.statement,
+        6,
+        typeof params.pageStart === 'number'
+          ? {
+              page_start: params.pageStart,
+              ...(typeof params.pageEnd === 'number' ? { page_end: params.pageEnd } : {}),
+            }
+          : undefined,
+      ).catch(() => [])
     : [];
 
   // A first generation builds the whole pool; a top-up asks only for the shortfall
@@ -609,7 +671,16 @@ export interface StartedMasteryCheck {
  * through here so they can't drift on the cap or the caching discipline.
  */
 async function beginCheckForObjective(
-  objective: { id: string; statement: string; subject: string; state: string; resource_id: string | null },
+  objective: {
+    id: string;
+    statement: string;
+    subject: string;
+    state: string;
+    resource_id: string | null;
+    /** Null for a whole-chapter objective — see `generateObjectivesForNode`. */
+    page_start: number | null;
+    page_end: number | null;
+  },
   userId: string,
   institutionId: string,
 ): Promise<StartedMasteryCheck> {
@@ -632,6 +703,8 @@ async function beginCheckForObjective(
     statement:     objective.statement,
     subject:       objective.subject,
     resourceId:    objective.resource_id,
+    pageStart:     objective.page_start,
+    pageEnd:       objective.page_end,
     userId,
     institutionId,
     seenIds,
@@ -718,14 +791,23 @@ export async function startNodeMasteryCheck(params: {
   userId:        string;
   institutionId: string;
   nodeId:        string;
+  /**
+   * The pages this check covers, when the plan split the chapter across reading
+   * days. Omit for the whole chapter.
+   */
+  pageStart?:    number | null;
+  pageEnd?:      number | null;
 }): Promise<StartedMasteryCheck> {
   // Ownership is enforced inside this call (404 on someone else's chapter), and
-  // it returns the existing objectives untouched when the chapter already has
-  // them — so re-verifying a task costs no AI budget.
+  // it returns the existing objectives untouched when the chapter (or this
+  // sitting of it) already has them — so re-verifying a task costs no AI budget.
   const objectives = await generateObjectivesForNode({
     nodeId:        params.nodeId,
     userId:        params.userId,
     institutionId: params.institutionId,
+    ...(typeof params.pageStart === 'number'
+      ? { pageStart: params.pageStart, pageEnd: params.pageEnd ?? null }
+      : {}),
   });
 
   if (objectives.length === 0) {
@@ -790,6 +872,8 @@ export async function startNodeMasteryCheck(params: {
       statement:     objective.statement,
       subject:       objective.subject,
       resourceId:    objective.resource_id,
+      pageStart:     objective.page_start,
+      pageEnd:       objective.page_end,
       userId:        params.userId,
       institutionId: params.institutionId,
       seenIds,

@@ -19,15 +19,26 @@
  * Pure — no I/O, no AI — so it is unit-tested directly.
  */
 import { z } from 'zod';
+import { MAX_PARTS } from '@utils/page-windows';
 
 /** Longer than a study session anyone actually does in one sitting. */
 const MAX_TASK_MINS = 600;
+
+/** How long a synthesised checkpoint is scheduled for. */
+const VERIFY_MINS = 15;
 
 const taskSchema = z.object({
   node_id:       z.string().trim().min(1),
   activity:      z.enum(['read', 'practice', 'verify']),
   duration_mins: z.number().finite().positive().max(MAX_TASK_MINS),
   detail:        z.string().trim().max(300).optional(),
+  /**
+   * Which sitting of the chapter this is, and how many there are. The model
+   * decides how to break a long chapter up; `utils/page-windows` turns that into
+   * real pages. Absent means the whole chapter in one go.
+   */
+  part:          z.number().int().positive().max(MAX_PARTS).optional(),
+  parts:         z.number().int().positive().max(MAX_PARTS).optional(),
 });
 
 const daySchema = z.object({
@@ -51,6 +62,9 @@ export interface ValidatedTask {
   activity:      'read' | 'practice' | 'verify';
   duration_mins: number;
   detail?:       string;
+  /** 1-based sitting within the chapter, and how many sittings there are. */
+  part:          number;
+  parts:         number;
 }
 
 export interface ValidatedDay {
@@ -96,9 +110,7 @@ function dayNumber(value: string): number | null {
   return Number.isFinite(time) ? Math.floor(time / 86400000) : null;
 }
 
-export function validateResourcePlan(
-  raw: unknown,
-  allowedNodeIds: Iterable<string>,
+export interface PlanConstraints {
   /**
    * Days before this are dropped. The model is told week 1 starts today, but
    * told is not the same as done: given a mid-week start it lays the week out
@@ -106,10 +118,68 @@ export function validateResourcePlan(
    * plan generated on a Friday came back telling the student to study Thursday.
    * Omit to keep every day regardless of date.
    */
-  startDate?: Date,
+  startDate?: Date;
+  /**
+   * Weekdays the student agreed to study, `0` = Sunday. A day on any other
+   * weekday is dropped.
+   *
+   * **Enforced here rather than trusted to the prompt** for the same reason the
+   * start date is: the model was already told, in capitals, not to schedule days
+   * that had passed, and did it anyway. A scheduling rule that only lives in the
+   * prompt is a suggestion. Omit to accept every weekday.
+   */
+  studyDays?: Iterable<number>;
+}
+
+/** A task's identity for pairing: the same chapter AND the same sitting. */
+function taskKey(task: ValidatedTask): string {
+  return `${task.node_id}:${task.part}/${task.parts}`;
+}
+
+/**
+ * Guarantee every reading task ends in a checkpoint on the same day.
+ *
+ * **Structural, not prompted.** Asking the model to pair them produces days where
+ * it forgot, and a reading day with nothing to prove is exactly the day a student
+ * finishes and has no idea whether any of it went in. Any read left unpaired gets
+ * a verify appended for the same chapter and the same sitting, so its questions
+ * come from the pages that were actually read.
+ *
+ * `practice` is left alone: it is optional extra work, not a claim to have
+ * covered anything.
+ */
+function withPairedVerifies(tasks: ValidatedTask[]): ValidatedTask[] {
+  const verified = new Set(
+    tasks.filter((t) => t.activity === 'verify').map(taskKey),
+  );
+
+  const missing: ValidatedTask[] = [];
+  for (const task of tasks) {
+    if (task.activity !== 'read') continue;
+    const key = taskKey(task);
+    if (verified.has(key)) continue;
+    verified.add(key);
+    missing.push({
+      node_id:       task.node_id,
+      activity:      'verify',
+      duration_mins: VERIFY_MINS,
+      part:          task.part,
+      parts:         task.parts,
+    });
+  }
+
+  return missing.length > 0 ? [...tasks, ...missing] : tasks;
+}
+
+export function validateResourcePlan(
+  raw: unknown,
+  allowedNodeIds: Iterable<string>,
+  constraints: PlanConstraints = {},
 ): ValidatedPlan {
   const allowed = new Set(allowedNodeIds);
   const reasons = new Set<string>();
+  const { startDate } = constraints;
+  const studyDays = constraints.studyDays ? new Set(constraints.studyDays) : null;
   const startDay = startDate ? Math.floor(Date.UTC(
     startDate.getUTCFullYear(),
     startDate.getUTCMonth(),
@@ -145,11 +215,19 @@ export function validateResourcePlan(
 
       // A day in the past cannot be studied. Only drop when the date actually
       // parses — an unrecognised format is left alone rather than binned.
-      if (startDay !== null && day.data.date) {
-        const parsed = dayNumber(day.data.date);
-        if (parsed !== null && parsed < startDay) {
+      const parsedDay = day.data.date ? dayNumber(day.data.date) : null;
+      if (startDay !== null && parsedDay !== null && parsedDay < startDay) {
+        dropped += 1;
+        reasons.add('day was scheduled in the past');
+        continue;
+      }
+
+      // Day 0 of the Unix epoch was a Thursday, so `+4` puts Sunday at 0.
+      if (studyDays !== null && parsedDay !== null) {
+        const weekday = (((parsedDay + 4) % 7) + 7) % 7;
+        if (!studyDays.has(weekday)) {
           dropped += 1;
-          reasons.add('day was scheduled in the past');
+          reasons.add('day fell on a weekday the student does not study');
           continue;
         }
       }
@@ -169,11 +247,18 @@ export function validateResourcePlan(
           continue;
         }
 
+        // A part beyond its own total is nonsense; clamp rather than drop, since
+        // the task is otherwise fine and the page window is computed downstream.
+        const parts = task.data.parts ?? 1;
+        const part = Math.min(task.data.part ?? 1, parts);
+
         tasks.push({
           node_id:       task.data.node_id,
           activity:      task.data.activity,
           duration_mins: Math.round(task.data.duration_mins),
           ...(task.data.detail ? { detail: task.data.detail } : {}),
+          part,
+          parts,
         });
         taskCount += 1;
       }
@@ -181,10 +266,13 @@ export function validateResourcePlan(
       // A day with nothing left to do is not a day.
       if (tasks.length === 0) continue;
 
+      const paired = withPairedVerifies(tasks);
+      taskCount += paired.length - tasks.length;
+
       days.push({
         day:   day.data.day ?? '',
         date:  day.data.date ?? '',
-        tasks,
+        tasks: paired,
       });
     }
 

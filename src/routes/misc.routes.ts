@@ -18,6 +18,7 @@ import {
   getNewsById,
   getBlogById,
   getEvents,
+  getEventById,
 } from '@controllers/controllers';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -82,7 +83,8 @@ newsRouter.get('/:id', getNewsById);
 export const eventsRouter = Router();
 eventsRouter.use(authenticate, scopeToInstitution);
 
-eventsRouter.get('/', getEvents);
+eventsRouter.get('/',    getEvents);
+eventsRouter.get('/:id', getEventById);
 
 /**
  * Blogs are READ here and written only through the admin routes. The feed

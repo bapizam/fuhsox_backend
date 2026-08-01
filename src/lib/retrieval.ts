@@ -51,21 +51,49 @@ export function rankByCosine<T extends RankableChunk>(
     .slice(0, k);
 }
 
+export interface PageScope {
+  page_start?: number;
+  page_end?: number;
+}
+
+/**
+ * Narrow a chunk set to a page window.
+ *
+ * **Falls back to the whole set when the window matches nothing**, which is not
+ * laziness: `ResourceChunk.page` is only populated for resources ingested since
+ * page-aware extraction, and a PDF whose pages all failed to render has none at
+ * all. Returning [] there would silently un-ground every check on an older book.
+ * A slightly wider grounding is a much smaller failure than no grounding.
+ */
+export function scopeToPages<T extends { page?: number }>(chunks: T[], scope?: PageScope): T[] {
+  if (!scope || typeof scope.page_start !== 'number') return chunks;
+  const start = scope.page_start;
+  const end = typeof scope.page_end === 'number' ? scope.page_end : Number.POSITIVE_INFINITY;
+
+  const inWindow = chunks.filter((c) => typeof c.page === 'number' && c.page >= start && c.page <= end);
+  return inWindow.length > 0 ? inWindow : chunks;
+}
+
 /**
  * Retrieve the passages from `resourceId` most relevant to `query`. Returns [] when
  * the resource was never ingested (no chunks) — callers fall back to ungrounded
  * generation rather than failing.
+ *
+ * `scope` restricts retrieval to a page window, so a check on the second sitting
+ * of a chapter draws only from the pages that sitting covered.
  */
 export async function retrieveChunks(
   resourceId: string,
   query: string,
   k = 6,
+  scope?: PageScope,
 ): Promise<RetrievedChunk[]> {
-  const chunks = await ResourceChunk.find(
+  const all = await ResourceChunk.find(
     { resource_id: resourceId },
     { text: 1, embedding: 1, page: 1, ordinal: 1 },
   ).lean();
 
+  const chunks = scopeToPages(all, scope);
   if (chunks.length === 0) return [];
 
   const queryEmbedding = await embedQuery(query);

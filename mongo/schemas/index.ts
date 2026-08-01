@@ -519,13 +519,32 @@ export const StudyPlanVersion = model<IStudyPlanVersion>(
 export interface ISubjectPlanTask {
   node_id: string;
   chapter_title: string;
-  /** Copied from the node at generation time so rendering needs no join. */
+  /**
+   * The pages THIS task covers — the chapter's own range when it is read in one
+   * sitting, and one slice of it when the planner split it. Computed from the
+   * node at generation time (never from the model), so rendering needs no join
+   * and a hallucinated page number cannot reach a student.
+   */
   page_start?: number;
   page_end?: number;
+  /** Which sitting of the chapter this is, and how many there are. */
+  part: number;
+  parts: number;
   activity: 'read' | 'practice' | 'verify';
   duration_mins: number;
   /** What to actually do — the model's own words, one sentence. */
   detail?: string;
+  /**
+   * When the student said they had done the reading. **Self-reported, and
+   * deliberately not the same thing as `completed`.**
+   *
+   * `completed` is evidence — it becomes true only by passing the mastery check,
+   * which is what replaced the plan's old "I've studied" checkbox. Reintroducing
+   * a tick that claimed mastery would undo that. This claims something much
+   * smaller and entirely checkable by the student themselves: I have read these
+   * pages. It is what unlocks the paired verify.
+   */
+  read_at?: Date;
   completed: boolean;
 }
 
@@ -550,6 +569,12 @@ export interface ISubjectStudyPlan extends Document {
   subject: string;
   exam_date?: Date;
   daily_hours?: number;
+  /**
+   * Weekdays the student agreed to study, `0` = Sunday. Stored so the plan can
+   * say which days it was built for, and so rebuilding it starts from the same
+   * answer rather than asking again.
+   */
+  study_days: number[];
   weeks: ISubjectPlanWeek[];
   milestones: string[];
   createdAt: Date;
@@ -569,9 +594,12 @@ const subjectPlanWeeks = [
             chapter_title: String,
             page_start:    Number,
             page_end:      Number,
+            part:          { type: Number, default: 1 },
+            parts:         { type: Number, default: 1 },
             activity:      { type: String, enum: ['read', 'practice', 'verify'] },
             duration_mins: Number,
             detail:        String,
+            read_at:       { type: Date, default: null },
             completed:     { type: Boolean, default: false },
           },
         ],
@@ -588,6 +616,7 @@ const SubjectStudyPlanSchema = new Schema<ISubjectStudyPlan>(
     subject:        { type: String, required: true },
     exam_date:      { type: Date },
     daily_hours:    { type: Number },
+    study_days:     { type: [Number], default: [] },
     weeks:          subjectPlanWeeks,
     milestones:     [String],
   },
@@ -619,6 +648,7 @@ const SubjectStudyPlanVersionSchema = new Schema<ISubjectStudyPlanVersion>(
     subject:        { type: String, required: true },
     exam_date:      { type: Date },
     daily_hours:    { type: Number },
+    study_days:     { type: [Number], default: [] },
     weeks:          subjectPlanWeeks,
     milestones:     [String],
     total_tasks:    { type: Number, default: 0 },

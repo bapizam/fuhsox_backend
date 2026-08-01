@@ -887,6 +887,24 @@ export const getEvents = asyncHandler(async (req: Request, res: Response) => {
   res.status(200).json(ok(events));
 });
 
+/**
+ * One published event, in full.
+ *
+ * Added when events moved into the campus feed: a feed card that cannot be
+ * opened is a dead end, and the notification deep link `/events/:id` had nowhere
+ * to land — it fell back to the list. Deliberately NOT audience-filtered: a
+ * student who was sent the link (or saw it in the feed) can read it; the
+ * targeting decides who it is pushed to, not who may look.
+ */
+export const getEventById = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params as { id: string };
+  const event = await prisma.event.findFirst({
+    where: { id, institution_id: req.institutionId, status: 'published' },
+  });
+  if (!event) throw new AppError(404, 'NOT_FOUND', 'That event is no longer listed');
+  res.status(200).json(ok(event));
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // ADDITIONAL AI CONTROLLERS
 // ══════════════════════════════════════════════════════════════════════════════
@@ -903,6 +921,11 @@ export const generateSubjectPlan = asyncHandler(async (req: Request, res: Respon
     resource_id: z.string().uuid(),
     exam_date:   z.string().datetime().optional(),
     daily_hours: z.number().positive().max(16),
+    /**
+     * Weekdays to schedule on, `0` = Sunday. Required and non-empty: a plan that
+     * assumes seven days a week is one the student silently falls behind.
+     */
+    study_days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   }).strict();
 
   const body = schema.parse(req.body);
@@ -913,6 +936,7 @@ export const generateSubjectPlan = asyncHandler(async (req: Request, res: Respon
     resourceId:    body.resource_id,
     examDate:      body.exam_date ? new Date(body.exam_date) : null,
     dailyHours:    body.daily_hours,
+    studyDays:     [...new Set(body.study_days)].sort((a, b) => a - b),
   });
 
   res.status(200).json(ok(plan));
@@ -953,6 +977,36 @@ export const updateSubjectPlanTask = asyncHandler(async (req: Request, res: Resp
     date:       body.date,
     taskIndex:  body.task_index,
     completed:  body.completed,
+  });
+
+  res.status(200).json(ok({ plan }));
+});
+
+/**
+ * Say whether a reading task's reading is done.
+ *
+ * Separate from `completed` on purpose — see `setSubjectTaskRead`. This is the
+ * student's own word that they read the pages; the checkpoint beside it is still
+ * the only thing that can call a chapter proved.
+ */
+export const updateSubjectPlanTaskRead = asyncHandler(async (req: Request, res: Response) => {
+  const schema = z.object({
+    resource_id: z.string().uuid(),
+    week_number: z.number().int().positive(),
+    date:        z.string().min(1),
+    task_index:  z.number().int().min(0),
+    read:        z.boolean(),
+  }).strict();
+
+  const body = schema.parse(req.body);
+
+  const plan = await subjectPlanService.setSubjectTaskRead({
+    userId:     req.user.id,
+    resourceId: body.resource_id,
+    weekNumber: body.week_number,
+    date:       body.date,
+    taskIndex:  body.task_index,
+    read:       body.read,
   });
 
   res.status(200).json(ok({ plan }));

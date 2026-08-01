@@ -26,12 +26,20 @@ import logger from '@lib/logger';
 
 export const PLACEMENT = {
   /**
-   * Chapters sampled per check. Ten items is a few minutes of the student's time
-   * and one AI call; sampling evenly across the resource matters more than
-   * covering every chapter, because the plan only needs to know roughly where
-   * the student's knowledge stops.
+   * Chapters sampled per check, spread evenly across the resource.
+   *
+   * Was 10, which was a fair trade when outline extraction only ever returned a
+   * handful of chapters — it looked like most of the book. Now that extraction
+   * reads the whole document, a real textbook comes back with thirty, and ten
+   * questions would leave two-thirds of it unmeasured while the plan ordered
+   * itself off the third it had seen. **Raising the sample is what stopped the
+   * outline fix quietly making placement worse.**
+   *
+   * Twenty is the ceiling on two counts: it is a few minutes of a student's time
+   * before they are allowed to do anything else, and it is one AI call whose
+   * items must all fit in one response.
    */
-  MAX_CHAPTERS: 10,
+  MAX_CHAPTERS: 20,
   /** Passages retrieved per chapter to ground its item. */
   GROUNDING_PER_CHAPTER: 3,
 } as const;
@@ -210,15 +218,29 @@ export async function completePlacementCheck(params: {
     throw new AppError(422, 'VALIDATION_ERROR', 'This placement check has no chapters left to record');
   }
 
-  const correctByNode = new Map<string, boolean>();
+  /**
+   * The verdict AND how sure the student said they were.
+   *
+   * `ChapterPlacement.confidence` was declared in the placement migration and
+   * written by nothing — the same dead-column bug `SyllabusNode.page_start` had
+   * before page-aware ingestion. The rating was already being COLLECTED (a
+   * placement runs through the mastery-check runner, which asks for 1–5 before
+   * each answer) and stored on `session_answers`; it simply never travelled the
+   * last hop to here, so the planner never saw a single self-rating.
+   *
+   * It matters most exactly where the single item is weakest: "got it right but
+   * guessed" and "got it wrong but was sure" are the two chapters worth
+   * scheduling early, and one binary cannot tell them apart.
+   */
+  const recordByNode = new Map<string, { correct: boolean; confidence: number | null }>();
   for (const answer of session.answers) {
     const nodeId = nodeByQuestion.get(answer.question_id);
     if (!nodeId) continue;
-    correctByNode.set(nodeId, answer.is_correct);
+    recordByNode.set(nodeId, { correct: answer.is_correct, confidence: answer.confidence });
   }
 
   await Promise.all(
-    [...correctByNode].map(([nodeId, correct]) =>
+    [...recordByNode].map(([nodeId, record]) =>
       prisma.chapterPlacement.upsert({
         where:  { user_id_node_id: { user_id: params.userId, node_id: nodeId } },
         create: {
@@ -226,19 +248,25 @@ export async function completePlacementCheck(params: {
           resource_id: resourceId,
           node_id:     nodeId,
           session_id:  params.sessionId,
-          correct,
+          correct:     record.correct,
+          confidence:  record.confidence,
         },
-        update: { correct, session_id: params.sessionId, created_at: new Date() },
+        update: {
+          correct:    record.correct,
+          confidence: record.confidence,
+          session_id: params.sessionId,
+          created_at: new Date(),
+        },
       }),
     ),
   );
 
   const chapters = nodes
-    .filter((node) => correctByNode.has(node.id))
+    .filter((node) => recordByNode.has(node.id))
     .map((node) => ({
       node_id: node.id,
       title:   node.title,
-      correct: correctByNode.get(node.id) ?? false,
+      correct: recordByNode.get(node.id)?.correct ?? false,
     }));
 
   logger.info(

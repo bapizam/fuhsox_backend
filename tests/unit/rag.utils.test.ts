@@ -1,5 +1,5 @@
 import { chunkText } from '@lib/chunk';
-import { cosine, rankByCosine } from '@lib/retrieval';
+import { cosine, rankByCosine, scopeToPages } from '@lib/retrieval';
 
 describe('chunkText', () => {
   it('returns nothing for empty/whitespace input', () => {
@@ -76,5 +76,37 @@ describe('rankByCosine', () => {
     const top = rankByCosine(chunks, [1, 0], 1)[0];
     expect(top.page).toBe(1);
     expect(top.ordinal).toBe(0);
+  });
+});
+
+describe('scopeToPages', () => {
+  const chunks = [
+    { text: 'a', page: 40 },
+    { text: 'b', page: 55 },
+    { text: 'c', page: 60 },
+    { text: 'd', page: 90 },
+  ];
+
+  it('keeps only the chunks inside the window', () => {
+    expect(scopeToPages(chunks, { page_start: 53, page_end: 66 }).map((c) => c.text)).toEqual(['b', 'c']);
+  });
+
+  it('runs to the end of the book when the window has no end', () => {
+    expect(scopeToPages(chunks, { page_start: 60 }).map((c) => c.text)).toEqual(['c', 'd']);
+  });
+
+  it('returns everything when there is no window', () => {
+    expect(scopeToPages(chunks)).toHaveLength(4);
+    expect(scopeToPages(chunks, {})).toHaveLength(4);
+  });
+
+  it('falls back to the whole set rather than grounding on nothing', () => {
+    // `page` is only populated for resources ingested since page-aware
+    // extraction. Returning [] for an older book would silently un-ground every
+    // check on it — a much bigger failure than a slightly wide window.
+    const unpaged: { text: string; page?: number }[] = [{ text: 'a' }, { text: 'b' }];
+    expect(scopeToPages(unpaged, { page_start: 10, page_end: 20 })).toHaveLength(2);
+    // Same when the pages exist but none land in the window.
+    expect(scopeToPages(chunks, { page_start: 500, page_end: 600 })).toHaveLength(4);
   });
 });

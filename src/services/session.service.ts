@@ -3,6 +3,11 @@ import { AIQuestion, AIFeedback } from '../../mongo/schemas';
 import { AppError } from '@typings/models';
 import { calculateScorePercent } from '@utils/xp';
 import { parseOptions, type McqOption } from '@utils/mcq';
+import {
+  classifyAnswerSubmission,
+  countsTowardsItemStats,
+  needsGrading,
+} from '@utils/answer-revision';
 import { gamificationService } from './gamification.service';
 import logger from '@lib/logger';
 import { getIO } from '@lib/socket-ref';
@@ -352,7 +357,11 @@ export interface BatchAnswerResult {
   question_id:      string;
   is_correct:       boolean;
   correct_answer:   string;
-  /** True when this question already had an answer — the stored one is returned. */
+  /**
+   * True when the stored answer was kept as-is — i.e. this submission repeated an
+   * answer already on file. A submission that CHANGES the answer is not
+   * "already answered": it replaces the row and comes back with the new verdict.
+   */
   already_answered: boolean;
 }
 
@@ -369,10 +378,18 @@ export interface BatchAnswerResult {
  * connected socket — so practice keeps using `submitAnswer` and this stays the
  * quiet bulk path.
  *
- * Idempotent per item rather than all-or-nothing: a question that already has an
- * answer comes back with `already_answered: true` and the STORED verdict instead
- * of failing the batch. A retried flush after a dropped response must not 409 the
+ * Idempotent per item rather than all-or-nothing: re-submitting the SAME answer
+ * comes back with `already_answered: true` and the stored verdict instead of
+ * failing the batch. A retried flush after a dropped response must not 409 the
  * whole exam.
+ *
+ * **A DIFFERENT answer replaces the stored one** while the session is open. This
+ * is what lets a student walk back through an exam and change their mind before
+ * submitting — a paper you cannot revise is not a paper. The window closes at
+ * `completed_at`, which is checked above, so a finished exam is still immutable.
+ * Note that only this bulk path allows it: `submitAnswer` (practice) still 409s,
+ * because practice reveals the verdict immediately and revising after seeing the
+ * answer would not be a revision.
  */
 export async function submitAnswers(params: {
   sessionId: string;
@@ -409,9 +426,13 @@ export async function submitAnswers(params: {
 
   const existing = await prisma.sessionAnswer.findMany({
     where:  { session_id: sessionId, question_id: { in: questionIds } },
-    select: { question_id: true, is_correct: true },
+    select: { id: true, question_id: true, is_correct: true, chosen_answer: true },
   });
   const existingByQuestion = new Map(existing.map((a) => [a.question_id, a]));
+
+  /** new / repeat / revision — see `utils/answer-revision` for why it matters. */
+  const classify = (item: BatchAnswerInput) =>
+    classifyAnswerSubmission(existingByQuestion.get(item.question_id), item);
 
   // Questions are dual-sourced exactly as in `submitAnswer` and `completeSession`:
   // bank questions live in PostgreSQL, AI-generated ones in MongoDB.
@@ -478,7 +499,9 @@ export async function submitAnswers(params: {
   const toGrade: { questionId: string; item: AnswerToGrade }[] = [];
   for (const item of deduped) {
     const source = sourceByQuestion.get(item.question_id);
-    if (!source || existingByQuestion.has(item.question_id)) continue;
+    // A repeat costs nothing: its verdict is already stored. A REVISION is graded
+    // afresh, because the text the grader saw is no longer the text on file.
+    if (!source || !needsGrading(classify(item))) continue;
     if (!isFreeResponse(source.question_type)) continue;
     toGrade.push({
       questionId: item.question_id,
@@ -515,6 +538,14 @@ export async function submitAnswers(params: {
     confidence:    number | null;
   }[] = [];
 
+  const toUpdate: {
+    id:            string;
+    chosen_answer: string;
+    is_correct:    boolean;
+    time_taken_ms: number;
+    confidence:    number | null;
+  }[] = [];
+
   for (const item of deduped) {
     const source = sourceByQuestion.get(item.question_id);
     if (source === undefined) {
@@ -523,7 +554,7 @@ export async function submitAnswers(params: {
     const correctAnswer = source.correct_answer;
 
     const previous = existingByQuestion.get(item.question_id);
-    if (previous) {
+    if (previous && classify(item) === 'repeat') {
       results.push({
         question_id:      item.question_id,
         is_correct:       previous.is_correct,
@@ -539,14 +570,24 @@ export async function submitAnswers(params: {
     const isCorrect =
       aiVerdicts.get(item.question_id) ?? exactMatchGrade(item.chosen_answer, correctAnswer);
 
-    toCreate.push({
-      session_id:    sessionId,
-      question_id:   item.question_id,
-      chosen_answer: item.chosen_answer,
-      is_correct:    isCorrect,
-      time_taken_ms: item.time_taken_ms,
-      confidence:    item.confidence ?? null,
-    });
+    if (previous) {
+      toUpdate.push({
+        id:            previous.id,
+        chosen_answer: item.chosen_answer,
+        is_correct:    isCorrect,
+        time_taken_ms: item.time_taken_ms,
+        confidence:    item.confidence ?? null,
+      });
+    } else {
+      toCreate.push({
+        session_id:    sessionId,
+        question_id:   item.question_id,
+        chosen_answer: item.chosen_answer,
+        is_correct:    isCorrect,
+        time_taken_ms: item.time_taken_ms,
+        confidence:    item.confidence ?? null,
+      });
+    }
 
     results.push({
       question_id:      item.question_id,
@@ -558,8 +599,38 @@ export async function submitAnswers(params: {
 
   if (toCreate.length > 0) {
     await prisma.sessionAnswer.createMany({ data: toCreate });
+  }
+
+  if (toUpdate.length > 0) {
+    await prisma.$transaction(
+      toUpdate.map((a) =>
+        prisma.sessionAnswer.update({
+          where: { id: a.id },
+          data:  {
+            chosen_answer: a.chosen_answer,
+            is_correct:    a.is_correct,
+            time_taken_ms: a.time_taken_ms,
+            confidence:    a.confidence,
+          },
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Empirical item difficulty counts FIRST attempts only — see
+   * `countsTowardsItemStats`. A revision would otherwise let one student
+   * contribute two outcomes for the same item, skewing the very statistic the
+   * pool rotation ranks on.
+   */
+  const statsWorthy = deduped.filter((item) => countsTowardsItemStats(classify(item)));
+  if (statsWorthy.length > 0) {
+    const verdictByQuestion = new Map(results.map((r) => [r.question_id, r.is_correct]));
     recordItemOutcomes(
-      toCreate.map((a) => ({ questionId: a.question_id, isCorrect: a.is_correct })),
+      statsWorthy.map((a) => ({
+        questionId: a.question_id,
+        isCorrect:  verdictByQuestion.get(a.question_id) ?? false,
+      })),
     );
   }
 
@@ -567,7 +638,8 @@ export async function submitAnswers(params: {
     {
       sessionId,
       submitted: toCreate.length,
-      skipped:   deduped.length - toCreate.length,
+      revised:   toUpdate.length,
+      unchanged: deduped.length - toCreate.length - toUpdate.length,
       ai_graded: aiVerdicts.size,
     },
     'Batch answers submitted',

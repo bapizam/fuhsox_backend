@@ -17,12 +17,16 @@ import type { ISubjectPlanWeek, ISubjectStudyPlan } from '../../mongo/schemas';
 import * as aiService from '@services/ai.service';
 import { AppError } from '@typings/models';
 import type { ValidatedPlan } from '@utils/plan-validation';
+import { pageWindow } from '@utils/page-windows';
 import logger from '@lib/logger';
 
 /**
  * Turn validated tasks into stored ones by filling in what the MODEL was never
  * allowed to supply: chapter titles and page ranges come from the database, so a
  * hallucinated page number cannot reach the student.
+ *
+ * The model may say a chapter takes three sittings; `pageWindow` decides which
+ * pages each of those sittings covers, from the range the database holds.
  */
 function materialiseWeeks(
   plan: ValidatedPlan,
@@ -38,12 +42,14 @@ function materialiseWeeks(
       tasks: day.tasks.flatMap((task) => {
         const node = nodeById.get(task.node_id);
         if (!node) return [];
+        const window = pageWindow(node.page_start, node.page_end, task.part, task.parts);
         return [
           {
             node_id:       task.node_id,
             chapter_title: node.title,
-            ...(node.page_start !== null ? { page_start: node.page_start } : {}),
-            ...(node.page_end !== null ? { page_end: node.page_end } : {}),
+            ...window,
+            part:          task.part,
+            parts:         task.parts,
             activity:      task.activity,
             duration_mins: task.duration_mins,
             ...(task.detail ? { detail: task.detail } : {}),
@@ -68,6 +74,8 @@ export async function generateSubjectPlan(params: {
   resourceId:    string;
   examDate:      Date | null;
   dailyHours:    number;
+  /** Weekdays the student agreed to study, `0` = Sunday. Never empty. */
+  studyDays:     number[];
 }): Promise<ISubjectStudyPlan> {
   const resource = await prisma.learningResource.findFirst({
     where: { id: params.resourceId, user_id: params.userId },
@@ -82,6 +90,7 @@ export async function generateSubjectPlan(params: {
     resourceTitle: resource.title,
     examDate:      params.examDate,
     dailyHours:    params.dailyHours,
+    studyDays:     params.studyDays,
     userId:        params.userId,
     institutionId: params.institutionId,
   });
@@ -100,6 +109,7 @@ export async function generateSubjectPlan(params: {
     subject,
     exam_date:      params.examDate,
     daily_hours:    params.dailyHours,
+    study_days:     params.studyDays,
     weeks,
     milestones:     plan.milestones,
   };
@@ -148,20 +158,34 @@ export async function generateSubjectPlan(params: {
   return saved;
 }
 
+export interface ScheduledCheck {
+  nodeId:    string;
+  pageStart: number | null;
+  pageEnd:   number | null;
+}
+
 /**
- * Chapters in the order the plan first schedules them — the order the student
- * will actually reach them, which is what makes an early budget cut-off safe.
+ * The checkpoints in the order the student will actually reach them, which is
+ * what makes an early budget cut-off safe — whatever the cap cuts off is the
+ * furthest away.
+ *
+ * Keyed by chapter AND page window: a chapter split over three sittings has
+ * three different checks with three different objective sets, so pre-building
+ * "the chapter" would build objectives the first sitting's check never uses.
  */
-function scheduledNodeOrder(weeks: ISubjectPlanWeek[]): string[] {
+function scheduledChecks(weeks: ISubjectPlanWeek[]): ScheduledCheck[] {
   const seen = new Set<string>();
-  const ordered: string[] = [];
+  const ordered: ScheduledCheck[] = [];
   for (const week of weeks) {
     for (const day of week.days) {
       for (const task of day.tasks) {
-        if (!seen.has(task.node_id)) {
-          seen.add(task.node_id);
-          ordered.push(task.node_id);
-        }
+        if (task.activity !== 'verify') continue;
+        const pageStart = task.page_start ?? null;
+        const pageEnd = task.page_end ?? null;
+        const key = `${task.node_id}:${pageStart}:${pageEnd}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ordered.push({ nodeId: task.node_id, pageStart, pageEnd });
       }
     }
   }
@@ -169,12 +193,14 @@ function scheduledNodeOrder(weeks: ISubjectPlanWeek[]): string[] {
 }
 
 /**
- * At most this many chapters are pre-built per plan generation. Each is one AI
- * call against the shared 20/day budget, and the plan itself just spent one —
- * an uncapped pre-build of a 14-chapter book would torch the student's whole
- * day. Chapters beyond the cap build on first verify instead.
+ * At most this many checkpoints are pre-built per plan generation. Each is one AI
+ * call against the shared 20/day budget, and the plan itself just spent one — an
+ * uncapped pre-build would torch the student's whole day, and splitting chapters
+ * into sittings multiplied how many there are. Everything past the cap builds on
+ * first verify instead, which is now gated behind marking the reading done — so
+ * the spend happens when the student is actually ready for it.
  */
-const PREBUILD_MAX_CHAPTERS = 6;
+const PREBUILD_MAX_CHECKS = 4;
 
 async function prebuildScheduledObjectives(params: {
   userId:        string;
@@ -183,19 +209,22 @@ async function prebuildScheduledObjectives(params: {
 }): Promise<void> {
   const { generateObjectivesForNode } = await import('@services/learning.service');
 
-  for (const nodeId of scheduledNodeOrder(params.weeks).slice(0, PREBUILD_MAX_CHAPTERS)) {
+  for (const check of scheduledChecks(params.weeks).slice(0, PREBUILD_MAX_CHECKS)) {
     try {
-      // Returns the cached rows untouched when the chapter already has
+      // Returns the cached rows untouched when this chapter+window already has
       // objectives, so re-planning a studied book costs nothing here.
       await generateObjectivesForNode({
-        nodeId,
+        nodeId:        check.nodeId,
         userId:        params.userId,
         institutionId: params.institutionId,
+        ...(check.pageStart !== null
+          ? { pageStart: check.pageStart, pageEnd: check.pageEnd }
+          : {}),
       });
     } catch (err) {
       // Budget spent or provider down — stop entirely rather than hammering a
-      // wall five more times. Everything left builds on demand.
-      logger.info({ err, nodeId }, 'Objective pre-build stopped; remaining chapters build on demand');
+      // wall three more times. Everything left builds on demand.
+      logger.info({ err, nodeId: check.nodeId }, 'Objective pre-build stopped; the rest build on demand');
       return;
     }
   }
@@ -249,6 +278,49 @@ export async function setSubjectTaskCompleted(params: {
   }
 
   task.completed = params.completed;
+  plan.markModified('weeks');
+  await plan.save();
+
+  return plan;
+}
+
+/**
+ * Say whether the reading was done.
+ *
+ * **Deliberately a different field from `completed`.** That one is evidence — it
+ * becomes true only by passing the chapter's mastery check, which is what
+ * replaced the plan's old "I've studied" checkbox, and giving it back a
+ * self-reported route would undo the whole point. This one claims something much
+ * smaller and entirely checkable by the student: I have read these pages. It is
+ * what unlocks the paired verify, so nobody is asked to prove a chapter they
+ * have not opened.
+ */
+export async function setSubjectTaskRead(params: {
+  userId:      string;
+  resourceId:  string;
+  weekNumber:  number;
+  date:        string;
+  taskIndex:   number;
+  read:        boolean;
+}): Promise<ISubjectStudyPlan> {
+  const plan = await SubjectStudyPlan.findOne({
+    user_id:     params.userId,
+    resource_id: params.resourceId,
+  });
+  if (!plan) throw new AppError(404, 'NOT_FOUND', 'No plan for this resource');
+
+  const week = plan.weeks.find((w) => w.week_number === params.weekNumber);
+  const day = week?.days.find((d) => d.date === params.date);
+  const task = day?.tasks[params.taskIndex];
+
+  if (!task) {
+    throw new AppError(404, 'NOT_FOUND', 'That task is not in the current plan');
+  }
+  if (task.activity === 'verify') {
+    throw new AppError(422, 'VALIDATION_ERROR', 'A checkpoint is passed, not marked as read');
+  }
+
+  task.read_at = params.read ? new Date() : undefined;
   plan.markModified('weeks');
   await plan.save();
 

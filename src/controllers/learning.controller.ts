@@ -177,12 +177,27 @@ export const startTopicMasteryCheck = asyncHandler(async (req: Request, res: Res
  * back to an orphan objective with no resource behind it.
  */
 export const startNodeMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
-  const body = z.object({ node_id: z.string().uuid() }).strict().parse(req.body);
+  const body = z
+    .object({
+      node_id: z.string().uuid(),
+      /**
+       * The pages this check covers. Sent by a plan task whose chapter is read
+       * over several sittings, so the questions come from the pages that sitting
+       * actually covered. Absent = the whole chapter, as before.
+       */
+      page_start: z.number().int().positive().optional(),
+      page_end:   z.number().int().positive().optional(),
+    })
+    .strict()
+    .parse(req.body);
 
   const started = await learningService.startNodeMasteryCheck({
     userId:        req.user.id,
     institutionId: req.institutionId,
     nodeId:        body.node_id,
+    ...(body.page_start !== undefined
+      ? { pageStart: body.page_start, pageEnd: body.page_end ?? null }
+      : {}),
   });
   res.status(201).json(ok(started));
 });

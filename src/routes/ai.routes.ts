@@ -11,6 +11,7 @@ import {
   getSubjectPlan,
   listSubjectPlans,
   updateSubjectPlanTask,
+  updateSubjectPlanTaskRead,
   getMyAIFeedback,
   getAIHistory,
   flagAIQuestion,
@@ -47,7 +48,8 @@ router.get('/plan/resource', listSubjectPlans);
 // GET   /api/v1/ai/plan/resource/:id    — the live plan for one resource id
 router.get('/plan/resource/:id', getSubjectPlan);
 // PATCH /api/v1/ai/plan/resource/task   — toggle one task's completed flag
-router.patch('/plan/resource/task', updateSubjectPlanTask);
+router.patch('/plan/resource/task',      updateSubjectPlanTask);
+router.patch('/plan/resource/task/read', updateSubjectPlanTaskRead);
 
 // GET  /api/v1/ai/feedback/me           — AI feedback history for current user
 router.get('/feedback/me', getMyAIFeedback);
