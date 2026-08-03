@@ -216,11 +216,9 @@ export interface IAIQuestion extends Document {
    */
   objective_id?: string;
   /**
-   * Set only for placement items (single-subject plan, Phase 1). Tags this doc
-   * with the `SyllabusNode` it was written from, which is how a placement answer
-   * maps back to a chapter. Mutually exclusive with `objective_id` in practice —
-   * a placement item belongs to no objective, which also keeps it out of every
-   * mastery pool query.
+   * The `SyllabusNode` this item was written from, when it is chapter-scoped.
+   * Node-addressed mastery checks use it to find the pool for a chapter without
+   * going through the objective.
    */
   node_id?: string;
   /** Bloom level this question targets — drives the per-level partial credit. */

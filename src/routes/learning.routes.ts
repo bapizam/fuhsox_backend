@@ -16,9 +16,6 @@ import {
   completeMasteryCheck,
   startNodeMasteryCheck,
   getResourceReadiness,
-  startPlacementCheck,
-  completePlacementCheck,
-  getPlacement,
   getLearnerModel,
   getRemediation,
   recordExamOutcome,
@@ -81,17 +78,6 @@ router.post('/topic-check', startTopicMasteryCheck);
 router.post('/node-check', startNodeMasteryCheck);
 // POST /api/v1/learning/objectives/:id/mastery-check/complete — score + advance.
 router.post('/objectives/:id/mastery-check/complete', completeMasteryCheck);
-
-// ─── Placement (cold start for the single-subject plan) ───────────────────────
-// The measurement a study plan is ordered by. One item per sampled chapter, in
-// ONE AI call — deliberately cheap and deliberately weak, and NOT evidence for
-// the learner model (see services/placement.service.ts for why).
-// POST /api/v1/learning/placement — start. 422 when the resource has no outline.
-router.post('/placement', startPlacementCheck);
-// POST /api/v1/learning/placement/complete — record answers. ZERO AI calls.
-router.post('/placement/complete', completePlacementCheck);
-// GET  /api/v1/learning/placement/:id — standing placement for a resource id.
-router.get('/placement/:id', getPlacement);
 
 // GET /api/v1/learning/resources/:id/readiness — readiness for ONE resource plus
 //     a per-chapter breakdown. `GET /learning/me` computes its headline number

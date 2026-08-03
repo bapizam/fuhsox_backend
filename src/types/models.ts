@@ -19,7 +19,10 @@ export type QuestionStatus = 'draft' | 'review' | 'published' | 'archived';
 export type QuestionSource = 'manual' | 'pdf_upload' | 'csv_upload' | 'ai_generated';
 // 'mastery_check' is the adaptive assessment that proves a LearningObjective —
 // it reuses the quiz session machinery rather than a parallel engine (M7 item 4).
-// 'placement' is the cold-start diagnostic taken before a study plan is built.
+// 'placement' is RETIRED — the cold-start diagnostic it named was removed, and
+// nothing writes this mode any more. The value stays because Postgres cannot drop
+// an enum member in place (it needs a type swap and a rewrite of quiz_sessions),
+// and because historical rows still carry it. Do not reuse it for anything else.
 // Keep in step with the `SessionMode` enum in prisma/schema.prisma.
 export type SessionMode    = 'practice' | 'exam' | 'review' | 'mastery_check' | 'placement';
 export type ConnectionStatus = 'pending' | 'accepted' | 'declined' | 'blocked';

@@ -5,12 +5,13 @@ import type { SessionAnswer, SessionMode } from '@typings/models';
  * Session modes that are measurements rather than achievements, and so pay no
  * XP, advance no streak, and count toward no badge.
  *
- * A placement check is designed to be partly failed — that is how it finds the
- * gaps a study plan is built around. Rewarding it would pay a student for being
- * assessed rather than for learning, let the diagnostic be farmed instead of
- * studied, and (via the streak) claim they had studied on a day they had not.
+ * Empty today — the cold-start placement check that motivated this list has been
+ * removed. The seam is kept rather than inlined into `earnsRewards`, because the
+ * distinction it draws is real: anything designed to be partly failed must not
+ * pay a student for being assessed, nor (via the streak) claim they studied on a
+ * day they did not. A future diagnostic mode belongs here, not at a call site.
  */
-const REWARDLESS_MODES: readonly SessionMode[] = ['placement'];
+const REWARDLESS_MODES: readonly SessionMode[] = [];
 
 /** Whether a finished session in this mode should pay out at all. */
 export function earnsRewards(mode: SessionMode): boolean {

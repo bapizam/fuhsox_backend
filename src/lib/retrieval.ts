@@ -108,11 +108,11 @@ export async function retrieveChunks(
  * `retrieveChunks` for several queries at once, returning one result list per
  * query in the order given.
  *
- * The placement check needs passages for every sampled chapter; calling
- * `retrieveChunks` per chapter would reload the resource's chunks and pay a
- * separate embedding round-trip each time. This loads the chunks once and embeds
- * all the queries in a single batch (`embedTexts` batches up to Gemini's cap),
- * which is the difference between one network call and ten.
+ * Callers that need passages for several chapters at once (the study planner
+ * grounding its weakest chapters, say) would otherwise reload the resource's
+ * chunks and pay a separate embedding round-trip per chapter. This loads the
+ * chunks once and embeds all the queries in a single batch (`embedTexts` batches
+ * up to Gemini's cap), which is the difference between one network call and ten.
  */
 export async function retrieveChunksForQueries(
   resourceId: string,

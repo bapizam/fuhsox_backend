@@ -19,14 +19,7 @@ function makeAnswers(correctCount: number, totalCount: number): SessionAnswer[] 
 // ─── Rewardless modes ─────────────────────────────────────────────────────────
 
 describe('earnsRewards', () => {
-  it('pays nothing for a placement check', () => {
-    // A diagnostic is a measurement, not an achievement — the student is MEANT to
-    // get things wrong, so rewarding it would pay them for being assessed and let
-    // the check be farmed in place of studying.
-    expect(earnsRewards('placement')).toBe(false);
-  });
-
-  it('still pays for every mode that is real practice', () => {
+  it('pays for every mode that is real practice', () => {
     expect(earnsRewards('practice')).toBe(true);
     expect(earnsRewards('exam')).toBe(true);
     expect(earnsRewards('review')).toBe(true);

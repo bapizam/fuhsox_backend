@@ -2,8 +2,8 @@
  * What a batch answer submission means when a row for that question already
  * exists.
  *
- * Silent runs (exam, mastery check, placement) let a student walk back through
- * the paper and change their mind until they submit — so the batch endpoint can
+ * Silent runs (exam, mastery check) let a student walk back through the paper
+ * and change their mind until they submit — so the batch endpoint can
  * no longer treat "there is already a row" as "ignore this". But it still has to
  * stay idempotent, because a dropped response makes the client re-send the whole
  * outstanding set and a retry must not be mistaken for a change of mind.

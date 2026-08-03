@@ -269,9 +269,12 @@ enum SessionMode {
   // machinery (grading, offline queue, XP, results screen) rather than a parallel
   // assessment engine; `MasteryAttempt.session_id` links back to the attempt.
   mastery_check
-  // One-off cold-start diagnostic across a resource's chapters, taken BEFORE a
-  // study plan is generated. Deliberately NOT evidence for the learner model —
-  // see `ChapterPlacement`.
+  // RETIRED. Was a cold-start diagnostic taken before a study plan was built;
+  // that step was removed, and no code path writes this mode any more. The value
+  // survives only because Postgres cannot drop an enum member in place — doing so
+  // needs a new type plus a rewrite of quiz_sessions, which is real risk for a
+  // purely cosmetic gain — and because sessions sat before the removal still
+  // carry it. Do not reuse it.
   placement
 }
 
@@ -293,7 +296,7 @@ model SessionAnswer {
   /// variance-of-recent-scores proxy the system infers. This is the student's own
   /// claim — and the gap between the two is the calibration signal, which is both a
   /// real measure and one of the best-evidenced study interventions on its own.
-  confidence     Int?
+  confidence Int?
 
   session QuizSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
 
@@ -728,15 +731,20 @@ model SyllabusNode {
   @@map("syllabus_nodes")
 }
 
-/// A single placement answer for one chapter — the cold-start signal a study plan
-/// is ordered by.
+/// RETIRED — dormant, read and written by nothing.
 ///
-/// **This is deliberately NOT part of the learner model.** It is ONE item per
-/// chapter, which is far too thin to be mastery evidence: writing it into
-/// `LearningObjective.mastery_score` or `MasteryAttempt` would feed
-/// `examReadiness` and the BKT graph a 1-item estimate and quietly corrupt both.
-/// It exists only to answer "where should this student start", and the UI labels
-/// it as a rough starting point. Real evidence still comes from mastery checks.
+/// Held one answer per chapter from the cold-start check a study plan used to be
+/// ordered by. That check stood between uploading a PDF and getting a plan, cost
+/// an AI call and several minutes of a student's time, and has been removed: a
+/// book nobody has been tested on is now simply planned in chapter order, and the
+/// ordering adapts from real mastery evidence as chapters are verified.
+///
+/// The table is kept rather than dropped so existing rows are not destroyed by a
+/// UI decision, and because dropping it buys nothing. If a diagnostic returns,
+/// note why this one was deliberately NOT part of the learner model: ONE item per
+/// chapter is far too thin to be mastery evidence, and writing it into
+/// `LearningObjective.mastery_score` or `MasteryAttempt` would have fed
+/// `examReadiness` and the BKT graph a 1-item estimate and quietly corrupted both.
 model ChapterPlacement {
   id          String   @id @default(uuid())
   user_id     String
@@ -801,12 +809,12 @@ model LearningObjective {
   /// All nullable/defaulted so objectives predating Phase 3 keep working — a row
   /// with a null stability is rebuilt from an empty card on its next attempt, so
   /// there is no backfill migration.
-  fsrs_stability  Float?
-  fsrs_difficulty Float?
-  fsrs_reps       Int    @default(0)
-  fsrs_lapses     Int    @default(0)
+  fsrs_stability   Float?
+  fsrs_difficulty  Float?
+  fsrs_reps        Int       @default(0)
+  fsrs_lapses      Int       @default(0)
   /// ts-fsrs State: 0 New, 1 Learning, 2 Review, 3 Relearning.
-  fsrs_state      Int    @default(0)
+  fsrs_state       Int       @default(0)
   fsrs_last_review DateTime?
 
   /// The knowledge component this objective exercises (reformation Phase 4).
@@ -898,7 +906,7 @@ model KnowledgeComponent {
 /// depth-bounded at read time — belt and braces, because this is exactly the kind
 /// of bug that is invisible in testing and catastrophic in production.
 model KCEdge {
-  id String @id @default(uuid())
+  id         String  @id @default(uuid())
   /// Prerequisite direction: `from` must be understood BEFORE `to`.
   from_kc_id String
   to_kc_id   String
@@ -975,7 +983,7 @@ model ExamOutcome {
   /// Stored HERE rather than recomputed later, because readiness decays — asking
   /// "what did we predict?" months on would otherwise give a different answer than
   /// the one that was actually shown to the student.
-  predicted_readiness Float?
+  predicted_readiness         Float?
   /// The same snapshot scoped to THIS exam's subject (single-subject plan, Phase 4).
   ///
   /// `predicted_readiness` above is computed across every objective the student

@@ -5,8 +5,7 @@
  * 15000)` — the first ~4 pages of a textbook. A student's book with twenty
  * chapters came back with the handful the model could see, which is why "only
  * eight chapters appear". Everything downstream inherits that: the plan can only
- * schedule chapters that exist as `SyllabusNode` rows, and the placement check
- * can only sample from them.
+ * schedule chapters that exist as `SyllabusNode` rows.
  *
  * Two things make the fix cheap rather than "send the whole book":
  *

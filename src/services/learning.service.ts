@@ -1367,14 +1367,6 @@ export interface ChapterReadiness {
   objectives_verified: number;
   /** 0..100, decay-adjusted. 0 when the chapter has no objectives yet. */
   mastery_percent:     number;
-  /**
-   * The placement answer for this chapter, or null if it was never asked.
-   *
-   * A WEAK signal — one question — and never mixed into `mastery_percent`. It is
-   * here so the UI can say "you got the placement question right" for a chapter
-   * with no real evidence yet, without implying that is mastery.
-   */
-  placement:           boolean | null;
 }
 
 export interface ResourceReadiness {
@@ -1415,7 +1407,7 @@ export async function getResourceReadiness(params: {
   });
   if (!resource) throw new AppError(404, 'NOT_FOUND', 'Resource not found');
 
-  const [nodes, objectives, placements] = await Promise.all([
+  const [nodes, objectives] = await Promise.all([
     prisma.syllabusNode.findMany({
       where:   { resource_id: params.resourceId, depth: 0 },
       orderBy: { ordinal: 'asc' },
@@ -1429,16 +1421,11 @@ export async function getResourceReadiness(params: {
         node_id: true, fsrs_stability: true, fsrs_last_review: true,
       },
     }),
-    prisma.chapterPlacement.findMany({
-      where:  { user_id: params.userId, resource_id: params.resourceId },
-      select: { node_id: true, correct: true },
-    }),
   ]);
 
   const now = new Date();
   const snapshots: ObjectiveSnapshot[] = objectives;
   const statementById = new Map(objectives.map((o) => [o.id, o.statement]));
-  const placementByNode = new Map(placements.map((p) => [p.node_id, p.correct]));
 
   const byNode = new Map<string, typeof objectives>();
   for (const objective of objectives) {
@@ -1467,7 +1454,6 @@ export async function getResourceReadiness(params: {
       objectives_total:    owned.length,
       objectives_verified: verified,
       mastery_percent:     Math.round(mastery * 1000) / 10,
-      placement:           placementByNode.get(node.id) ?? null,
     };
   });
 
