@@ -12,7 +12,6 @@ import {
   listObjectives,
   generateObjectives,
   startMasteryCheck,
-  startTopicMasteryCheck,
   completeMasteryCheck,
   startNodeMasteryCheck,
   getResourceReadiness,
@@ -64,15 +63,12 @@ router.post('/nodes/:nodeId/objectives', generateObjectives);
 // POST /api/v1/learning/objectives/:id/mastery-check — start. Returns a normal
 //      QuizSession id the existing runner plays unmodified.
 router.post('/objectives/:id/mastery-check', startMasteryCheck);
-// POST /api/v1/learning/topic-check — start a check from a plan task's topic.
-//      Upserts a topic objective, then behaves exactly like the route above. This
-//      is the plan's evidence gate that replaced the "I've studied" checkbox.
-router.post('/topic-check', startTopicMasteryCheck);
-// POST /api/v1/learning/node-check — the PER-RESOURCE plan's evidence gate.
-//      Takes a real `node_id`, so the objective it checks always carries a
-//      resource_id and its questions are RAG-grounded in the student's own PDF.
-//      `topic-check` above cannot promise that: it string-matches a free-text
-//      topic and, on a miss, creates an orphan objective whose questions come
+// POST /api/v1/learning/node-check — the PER-RESOURCE plan's evidence gate, and
+//      the plan's replacement for the "I've studied" checkbox. Takes a real
+//      `node_id`, so the objective it checks always carries a resource_id and its
+//      questions are RAG-grounded in the student's own PDF. The free-text
+//      `topic-check` it replaced could not promise that: it string-matched a
+//      topic and, on a miss, created an orphan objective whose questions came
 //      from the model's world knowledge instead. ONE AI call the first time a
 //      chapter is checked, none afterwards.
 router.post('/node-check', startNodeMasteryCheck);

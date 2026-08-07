@@ -147,33 +147,12 @@ export const startMasteryCheck = asyncHandler(async (req: Request, res: Response
   res.status(201).json(ok(started));
 });
 
-const topicCheckSchema = z.object({
-  subject: z.string().min(1).max(255),
-  topic:   z.string().min(1).max(255),
-}).strict();
-
 /**
- * Start a mastery check from a study-plan task's topic — the plan's evidence
- * gate. Upserts a topic objective server-side, so the client only sends what it
- * has (the task's subject + topic).
- */
-export const startTopicMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
-  const body = topicCheckSchema.parse(req.body);
-  const started = await learningService.startTopicMasteryCheck({
-    userId:        req.user.id,
-    institutionId: req.institutionId,
-    subject:       body.subject,
-    topic:         body.topic,
-  });
-  res.status(201).json(ok(started));
-});
-
-/**
- * Start a mastery check for a CHAPTER — the per-resource plan's evidence gate.
+ * Start a mastery check for a CHAPTER — the plan's evidence gate.
  *
- * Unlike `topic-check`, the objective is resolved from a real `node_id`, so the
- * questions are always grounded in the student's own material instead of falling
- * back to an orphan objective with no resource behind it.
+ * The objective is resolved from a real `node_id`, so the questions are always
+ * grounded in the student's own material instead of falling back to an orphan
+ * objective with no resource behind it.
  */
 export const startNodeMasteryCheck = asyncHandler(async (req: Request, res: Response) => {
   const body = z

@@ -1805,7 +1805,6 @@ export const learningService = {
   listObjectives,
   startMasteryCheck,
   startNodeMasteryCheck,
-  startTopicMasteryCheck,
   completeMasteryCheck,
   getLearnerModel,
   getResourceReadiness,
