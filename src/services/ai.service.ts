@@ -1,14 +1,16 @@
+import { createHash } from 'node:crypto';
 import type { Socket } from 'socket.io';
 import { callAI, streamFeedback } from '@lib/ai-provider';
 import prisma from '@config/database';
-import { AIQuestion, AIFeedback, StudyPlan } from '../../mongo/schemas';
+import { AIQuestion, AIFeedback, ResourcePrereq } from '../../mongo/schemas';
 import { REDIS_KEYS } from '@config/constants';
 import { incrWithExpiry, getCount, getEndOfDayTTL, getTodayWAT } from '@lib/redis';
 import { AppError, type GeneratedQuestion, type AIGenerationResult } from '@typings/models';
 import { partitionValidItems, type RawItem } from '@utils/item-validation';
 import { validateResourcePlan, type ValidatedPlan } from '@utils/plan-validation';
+import { acceptPrerequisites, type PrereqEdge } from '@utils/chapter-order';
 import { buildOutlineSource, type OutlineSourcePage } from '@utils/outline-source';
-import { retrieveChunksForQueries } from '@lib/retrieval';
+import { chapterPassages, type RetrievedChunk } from '@lib/retrieval';
 import {
   describeChoice,
   findOption,
@@ -18,7 +20,7 @@ import {
   type McqOption,
 } from '@utils/mcq';
 import { resolveDiscipline } from '@config/academic';
-import { effectiveState, revisionPriority, type ObjectiveSnapshot } from '@utils/mastery';
+import { effectiveState } from '@utils/mastery';
 import logger from '@lib/logger';
 
 // ─── Discipline context (reformation — discipline-aware prompts) ───────────────
@@ -95,11 +97,6 @@ When a student answers a question incorrectly, provide:
 4. A memorable, discipline-appropriate tip to help them remember
 Keep responses concise (150-250 words), warm, and pedagogically sound.
 Respond in plain text — no markdown formatting.`;
-
-const STUDY_PLAN_SYSTEM_PROMPT = `You are an expert academic coach.
-Generate a structured, realistic, week-by-week study plan in strict JSON format.
-JSON format: { "weeks": [{ "week_number": number, "days": [{ "day": string, "date": string, "tasks": [{ "subject": string, "topic": string, "duration_mins": number, "activity_type": string, "recommended_question_set": string, "completed": false }] }] }], "milestones": [string] }
-No markdown, no preamble. Valid JSON only.`;
 
 // ─── Question Generation ───────────────────────────────────────────────────────
 
@@ -339,74 +336,6 @@ export async function streamAnswerFeedback(
   return fullText;
 }
 
-// ─── Study Plan Generation ─────────────────────────────────────────────────────
-
-export async function generateStudyPlan(params: {
-  userId:        string;
-  institutionId: string;
-  subjects:      string[];
-  /** Null for an ongoing "just study" plan with no exam deadline. */
-  examDate:      Date | null;
-  dailyHours:    number;
-}): Promise<Record<string, unknown>> {
-  // Same daily budget as question generation (plan generation used to be
-  // unmetered — anyone could burn tokens without touching the limit).
-  const institution = await prisma.institution.findUnique({
-    where:  { id: params.institutionId },
-    select: { ai_daily_limit: true },
-  });
-
-  const dailyLimit   = institution?.ai_daily_limit ?? 20;
-  const redisKey     = REDIS_KEYS.AI_DAILY(params.userId, getTodayWAT());
-  const currentUsage = await getCount(redisKey);
-
-  if (currentUsage >= dailyLimit) {
-    throw new AppError(
-      429,
-      'AI_LIMIT_REACHED',
-      `Daily AI limit of ${dailyLimit} reached. Resets at midnight WAT.`,
-    );
-  }
-
-  // Ground the plan in what the student is ACTUALLY studying — their loaded
-  // materials, their objectives and where they are weakest — instead of generating
-  // a generic timetable from subject names alone (reformation — grounded planner).
-  // Empty when the student has loaded nothing yet, in which case the prompt cleanly
-  // falls back to the subjects-only form.
-  const ctx = await getLearnerContext(params.userId, params.institutionId);
-  const grounding = await gatherPlanGrounding(params.userId);
-  const prompt = buildStudyPlanPrompt(params, grounding);
-
-  // ── Call whichever provider is active ────────────────────────────────────
-  const response = await callAI({
-    system:     withDiscipline(ctx, STUDY_PLAN_SYSTEM_PROMPT),
-    messages:   [{ role: 'user', content: prompt }],
-    max_tokens: 8192,
-  });
-
-  const planData = parseJSONResponse<Record<string, unknown>>(response.text, 'study plan data');
-
-  // Count the successful generation against today's budget
-  await incrWithExpiry(redisKey, getEndOfDayTTL());
-
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'study_plan',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
-  });
-
-  logger.info(
-    { userId: params.userId, provider: response.provider },
-    'Study plan generated',
-  );
-
-  return planData;
-}
-
 // ─── PDF Question Parsing ──────────────────────────────────────────────────────
 
 export async function parseQuestionsFromText(
@@ -429,40 +358,6 @@ ${extractedText.substring(0, 15000)}`;
   });
 
   return parseGeneratedQuestions(response.text, 'mcq');
-}
-
-// ─── Retrieve Study Plan ───────────────────────────────────────────────────────
-
-export async function getStudyPlan(userId: string): Promise<Record<string, unknown> | null> {
-  const plan = await StudyPlan.findOne({ user_id: userId }).lean();
-  return plan;
-}
-
-// ─── Update Study-Plan Task Completion ─────────────────────────────────────────
-
-/**
- * Toggle one task's `completed` flag (mobile-additive; the plan previously had
- * no write path besides full regeneration). Tasks are addressed positionally —
- * week_number + day date + task index — because regeneration replaces the
- * whole document anyway.
- */
-export async function updateStudyPlanTask(
-  userId: string,
-  target: { week_number: number; date: string; task_index: number; completed: boolean },
-): Promise<Record<string, unknown>> {
-  const plan = await StudyPlan.findOne({ user_id: userId });
-  if (!plan) throw new AppError(404, 'NOT_FOUND', 'No study plan found — generate one first');
-
-  const week = plan.weeks.find((w) => w.week_number === target.week_number);
-  const day  = week?.days.find((d) => d.date === target.date);
-  const task = day?.tasks[target.task_index];
-  if (!task) throw new AppError(404, 'NOT_FOUND', 'Task not found in the study plan');
-
-  task.completed = target.completed;
-  plan.markModified('weeks');
-  await plan.save();
-
-  return plan.toObject() as unknown as Record<string, unknown>;
 }
 
 // ─── Get AI Feedback History ──────────────────────────────────────────────────
@@ -594,129 +489,6 @@ function buildFeedbackPrompt(
   ]
     .filter(Boolean)
     .join('\n');
-}
-
-function buildStudyPlanPrompt(
-  params: { subjects: string[]; examDate: Date | null; dailyHours: number },
-  grounding: string,
-): string {
-  const today = new Date();
-  // "Just study" (no exam) → a steady rolling plan the student can repeat, rather
-  // than a countdown to a deadline.
-  const ONGOING_WEEKS = 4;
-  const weeksLeft = params.examDate
-    ? Math.max(1, Math.ceil((params.examDate.getTime() - today.getTime()) / (7 * 86400000)))
-    : ONGOING_WEEKS;
-
-  const deadlineLine = params.examDate
-    ? `Exam date: ${params.examDate.toISOString().split('T')[0]}\nWeeks available: ${weeksLeft}`
-    : `No exam deadline — this is an ongoing "just study" plan. Build a balanced ${ONGOING_WEEKS}-week rotation the student can repeat, with steady, sustainable coverage rather than a countdown.`;
-
-  return `Create a ${weeksLeft}-week study plan for this student (their discipline is in the system role above).
-
-Subjects: ${params.subjects.join(', ')}
-${deadlineLine}
-Available study hours per day: ${params.dailyHours}
-Starting date: ${today.toISOString().split('T')[0]}
-${grounding}
-
-Create a realistic, balanced plan that ${
-  grounding
-    ? 'is built around the specific materials, chapters and objectives listed above — front-loading the weakest areas, and mapping practice-question sessions to those objectives'
-    : 'allocates time proportionally across the subjects listed'
-}, and has clear weekly milestones. Format as specified JSON.`;
-}
-
-/**
- * Gather the student's real learning state for the planner (reformation — grounded
- * planner). Without this, `generateStudyPlan` only ever saw subject NAMES and
- * produced the generic timetable any model would — "Week 1: review Physiology" —
- * with no idea what the student had loaded or where they were weak.
- *
- * Pulls three things and folds them into a prompt block: the materials/chapters
- * they have actually loaded, their objectives grouped by subject with live
- * (decay-adjusted) state, and the weakest objectives by revision priority — the
- * same pure `utils/mastery` maths the analytics dashboard uses, so the plan and the
- * dashboard agree on what "weak" means.
- *
- * Returns '' when the student has loaded nothing, so the caller falls back to the
- * subjects-only prompt rather than dressing an empty state as content. Costs no AI.
- */
-async function gatherPlanGrounding(userId: string): Promise<string> {
-  const [objectives, resources] = await Promise.all([
-    prisma.learningObjective.findMany({
-      where:  { user_id: userId },
-      select: {
-        id: true, subject: true, statement: true, state: true,
-        mastery_score: true, confidence: true, weight: true,
-        next_review_at: true, fsrs_stability: true, fsrs_last_review: true,
-      },
-      orderBy: { subject: 'asc' },
-    }),
-    prisma.learningResource.findMany({
-      where:  { user_id: userId },
-      select: {
-        title: true, course_code: true,
-        nodes: { where: { depth: 0 }, select: { title: true }, orderBy: { ordinal: 'asc' }, take: 14 },
-      },
-    }),
-  ]);
-
-  if (objectives.length === 0 && resources.length === 0) return '';
-
-  const now = new Date();
-  const lines: string[] = [];
-
-  if (resources.length > 0) {
-    lines.push('Loaded materials and their chapters:');
-    for (const r of resources.slice(0, 12)) {
-      const chapters = r.nodes.map((n) => n.title).join('; ');
-      lines.push(`- ${r.title}${r.course_code ? ` (${r.course_code})` : ''}${chapters ? ` — chapters: ${chapters}` : ''}`);
-    }
-    lines.push('');
-  }
-
-  if (objectives.length > 0) {
-    const bySubject = new Map<string, typeof objectives>();
-    for (const o of objectives) {
-      const bucket = bySubject.get(o.subject);
-      if (bucket) bucket.push(o);
-      else bySubject.set(o.subject, [o]);
-    }
-
-    lines.push("What the student is actually studying (their objectives, with current state):");
-    let shown = 0;
-    for (const [subject, group] of bySubject) {
-      if (shown >= 40) break;
-      lines.push(`[${subject}]`);
-      for (const o of group.slice(0, 8)) {
-        if (shown >= 40) break;
-        lines.push(`  - ${o.statement} — ${effectiveState(o.state, o.next_review_at, now)}`);
-        shown += 1;
-      }
-    }
-    lines.push('');
-
-    const snapshots: ObjectiveSnapshot[] = objectives.map((o) => ({
-      id: o.id, subject: o.subject, state: o.state,
-      mastery_score: o.mastery_score, confidence: o.confidence, weight: o.weight,
-      next_review_at: o.next_review_at,
-      fsrs_stability: o.fsrs_stability, fsrs_last_review: o.fsrs_last_review,
-    }));
-    const statementById = new Map(objectives.map((o) => [o.id, o.statement]));
-    const weak = revisionPriority(snapshots, now).slice(0, 12);
-    if (weak.length > 0) {
-      lines.push('Weakest areas — schedule these EARLIEST and most often:');
-      for (const w of weak) {
-        lines.push(`  - ${statementById.get(w.objective_id) ?? ''} (${w.subject}) — ${w.reason.replace(/_/g, ' ')}`);
-      }
-      lines.push('');
-    }
-  }
-
-  return `
-=== THIS STUDENT'S ACTUAL LEARNING STATE (ground the plan in this, not generic topics) ===
-${lines.join('\n')}`;
 }
 
 // ─── Response Parser ───────────────────────────────────────────────────────────
@@ -1296,9 +1068,30 @@ export async function generateMasteryQuestions(params: {
 
 // ─── Resource-anchored study plan (single-subject plan, Phase 2) ───────────────
 
+/**
+ * How many chapters get a précis in the grounding block.
+ *
+ * A bound on the PROMPT, not on the plan: every chapter is still listed and still
+ * schedulable, the ones past this simply go in as title and pages. Forty chapters
+ * at {@link PRECIS_CHARS} is around 10k characters, which is input — the 8192-token
+ * cap that makes a long plan truncate applies to output, so this adds no risk to
+ * the response.
+ */
+const MAX_PRECIS_CHAPTERS = 40;
+/** How much of a chapter's own text is worth quoting to describe it. */
+const PRECIS_CHARS = 240;
+
+/** A chapter's passages as one flat, collapsed, length-capped line. */
+function summarise(passages: RetrievedChunk[] | undefined): string {
+  if (!passages || passages.length === 0) return '';
+  const joined = passages.map((p) => p.text).join(' ').replace(/\s+/g, ' ').trim();
+  return joined.length > PRECIS_CHARS ? `${joined.slice(0, PRECIS_CHARS)}…` : joined;
+}
+
 const RESOURCE_PLAN_SYSTEM_PROMPT = `You are an expert academic coach building a study plan from ONE book the student owns.
 Every task you write must name a chapter by its exact node_id from the list you are given — never invent a chapter, never write a topic in free text.
-Where you are told which chapters the student is weakest on, schedule those EARLIEST and revisit them rather than walking the book front to back. Where nothing has been measured yet, work through the book in its own chapter order — do not invent a difficulty ranking of your own.
+Read the chapters in the order they are listed. That order already accounts for which chapters depend on earlier ones, so do not reorder it and do not invent a difficulty ranking of your own.
+Where you are told which chapters the student is weakest on, come back to them with short "practice" tasks spaced through the plan — revision is a return visit, not a re-read, and it works because it is spread out.
 A long chapter is read over several sittings: set "parts" to how many sittings it takes and "part" to which one this task is. A chapter read in one go is part 1 of 1. NEVER write page numbers — they are computed from the book itself.
 Every "read" task is followed by a "verify" task on the SAME DAY with the same node_id, the same part and the same parts, so the student proves what they just read while it is fresh.
 CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
@@ -1319,6 +1112,14 @@ async function gatherResourceGrounding(params: {
   lines:    string[];
   nodeIds:  string[];
   weakest:  { nodeId: string; title: string }[];
+  /** Pages across the chapters whose ranges were actually located in the PDF. */
+  pagesLocated:      number;
+  /** Chapters with no page range — typed by hand, or never matched in the text. */
+  chaptersUnlocated: number;
+  /** Every chapter, in book order — the allow-list and the prerequisite input. */
+  chapters: { id: string; title: string }[];
+  /** A few sentences of each chapter's own text, keyed by node id. */
+  passages: Map<string, RetrievedChunk[]>;
 }> {
   const [nodes, objectives] = await Promise.all([
     prisma.syllabusNode.findMany({
@@ -1369,14 +1170,35 @@ async function gatherResourceGrounding(params: {
     };
   };
 
+  /**
+   * A few sentences of each chapter's OWN text — the thing the planner never had.
+   *
+   * Costs at most one embedding batch (usually nothing at all, since a located
+   * page range is taken by page), which is why it can cover the whole book where
+   * the old weakest-only grounding covered five chapters. Best-effort: a resource
+   * that was never ingested, or an embedding call that fails, simply leaves the
+   * map empty and the grounding degrades to what it used to be.
+   */
+  const passages = await chapterPassages(
+    params.resourceId,
+    nodes.slice(0, MAX_PRECIS_CHAPTERS).map((n) => ({
+      id: n.id, title: n.title, page_start: n.page_start, page_end: n.page_end,
+    })),
+    2,
+  ).catch(() => new Map<string, RetrievedChunk[]>());
+
   const lines: string[] = ['Chapters in this book, with where the student stands:'];
+  let pagesLocated = 0;
+  let chaptersUnlocated = 0;
   for (const node of nodes) {
     const { label } = standing(node.id);
-    const pages =
-      node.page_start !== null && node.page_end !== null
-        ? ` (pp. ${node.page_start}-${node.page_end})`
-        : '';
+    const located = node.page_start !== null && node.page_end !== null && node.page_end >= node.page_start;
+    if (located) pagesLocated += (node.page_end as number) - (node.page_start as number) + 1;
+    else chaptersUnlocated += 1;
+    const pages = located ? ` (pp. ${node.page_start}-${node.page_end})` : '';
     lines.push(`- node_id=${node.id} | "${node.title}"${pages} — ${label}`);
+    const precis = summarise(passages.get(node.id));
+    if (precis) lines.push(`  covers: ${precis}`);
   }
 
   /**
@@ -1397,11 +1219,187 @@ async function gatherResourceGrounding(params: {
     .map((n) => ({ nodeId: n.id, title: n.title }));
 
   if (weakest.length > 0) {
-    lines.push('', 'Weakest chapters — schedule these EARLIEST and revisit them:');
+    lines.push('', 'Chapters the student is weakest on — come back to these:');
     for (const node of weakest) lines.push(`- node_id=${node.nodeId} | "${node.title}"`);
   }
 
-  return { lines, nodeIds: nodes.map((n) => n.id), weakest };
+  return {
+    lines,
+    nodeIds: nodes.map((n) => n.id),
+    weakest,
+    pagesLocated,
+    chaptersUnlocated,
+    chapters: nodes.map((n) => ({ id: n.id, title: n.title })),
+    passages,
+  };
+}
+
+// ─── Sizing a plan to the book, rather than to a round number ─────────────────
+
+/** The reading pace the prompt quotes, used to size the plan before writing it. */
+const PAGES_PER_HOUR = 15;
+/** A chapter whose pages were never located still has to be read. */
+const HOURS_PER_UNLOCATED_CHAPTER = 1.5;
+/** Every sitting ends in a checkpoint, and checkpoints are not free. */
+const CHECKPOINT_OVERHEAD = 1.25;
+/**
+ * The furthest ahead a plan is written in detail.
+ *
+ * Not a taste call: the whole timetable comes back in ONE response capped at
+ * 8192 tokens, and a plan much longer than this stops mid-array — which
+ * `parseJSONResponse` cannot rescue, so the student pays an AI credit for a 500.
+ * A twenty-week exam still gets twenty weeks of countdown on the summary card;
+ * it just gets the first {@link MAX_PLAN_WEEKS} of them written out.
+ */
+const MAX_PLAN_WEEKS = 12;
+
+// ─── Chapter prerequisites ────────────────────────────────────────────────────
+
+const PREREQ_SYSTEM_PROMPT = `You are an expert in the structure of academic texts. You are given the chapters of ONE book, each with a few sentences of its own text, and you decide which chapters must be READ BEFORE which others.
+An edge means: understanding "to" genuinely requires having read "from" first — it defines a term, derives a result, or introduces a method that "to" uses without re-explaining.
+Be SPARING. Most chapters depend on nothing, or on one earlier chapter. Do not add an edge merely because two chapters are about related topics, and do not simply restate the book's own order — an edge from every chapter to the next one is useless.
+Where a book is genuinely front-to-back, return few edges or none. That is a valid and common answer.
+Never propose an edge from a chapter to itself, and never propose two chapters as prerequisites of each other.
+CRITICAL: respond with VALID JSON ONLY — no markdown fences, no preamble.
+JSON format strictly: { "edges": [{ "from": "<node_id>", "to": "<node_id>", "strength": number }] }
+"strength" is 0..1: how badly "to" breaks down if "from" has not been read.`;
+
+/**
+ * Fingerprint of the chapter list the edges were derived from.
+ *
+ * Re-extracting an outline deletes and re-creates every `SyllabusNode`, so every
+ * stored edge would point at a chapter that no longer exists. Keying the cache
+ * on the ids means that rebuilds the graph instead of silently applying an old
+ * one to a new outline.
+ */
+function outlineKey(chapterIds: string[]): string {
+  return createHash('sha1').update(chapterIds.join('|')).digest('hex');
+}
+
+/** Below this there is no order worth deriving, and the call is pure waste. */
+const MIN_CHAPTERS_FOR_PREREQS = 4;
+
+/**
+ * The dependency graph over a book's chapters — derived once, then free forever.
+ *
+ * **The one AI call this feature adds, and the student pays it at most once per
+ * book.** Chapter 9 assuming chapter 4 is a fact about the book, not about the
+ * reader: it does not change when mastery does, so every regeneration after the
+ * first reads the cached edges and spends nothing. Without that caching this
+ * could not justify a slot in a 20/day budget shared with question generation,
+ * planning and tutor feedback.
+ *
+ * **Never throws.** Budget exhausted, provider down, malformed JSON, a graph that
+ * is all cycles — every one of them returns `[]`, and `chapterRank` on an empty
+ * edge set reproduces the book's own order exactly. A better order is an
+ * improvement on top of a working planner; it is never a thing the planner
+ * depends on.
+ */
+export async function getChapterPrerequisites(params: {
+  resourceId:    string;
+  userId:        string;
+  institutionId: string;
+  /** Every chapter, in book order. */
+  chapters:      { id: string; title: string }[];
+  passages:      Map<string, RetrievedChunk[]>;
+}): Promise<PrereqEdge[]> {
+  if (params.chapters.length < MIN_CHAPTERS_FOR_PREREQS) return [];
+
+  const ids = params.chapters.map((c) => c.id);
+  const key = outlineKey(ids);
+
+  try {
+    const cached = await ResourcePrereq.findOne({ resource_id: params.resourceId }).lean();
+    if (cached?.outline_key === key) {
+      return cached.edges.map((e) => ({ from: e.from, to: e.to, strength: e.strength }));
+    }
+  } catch (err) {
+    logger.warn({ err, resourceId: params.resourceId }, 'Prerequisite cache unreadable; deriving');
+  }
+
+  try {
+    await consumeAIBudget(params.userId, params.institutionId);
+
+    const listing = params.chapters
+      .map((chapter) => {
+        const precis = summarise(params.passages.get(chapter.id));
+        return `- node_id=${chapter.id} | "${chapter.title}"${precis ? `\n  covers: ${precis}` : ''}`;
+      })
+      .join('\n');
+
+    const response = await callAI({
+      system:     PREREQ_SYSTEM_PROMPT,
+      messages:   [
+        {
+          role:    'user',
+          content: `These are the chapters of one book, in the order it prints them.\n\n${listing}\n\nWhich chapters must be read before which others? Copy node_id values exactly. Return only the dependencies you are confident about.`,
+        },
+      ],
+      max_tokens: 2048,
+    });
+
+    await prisma.aIUsageLog.create({
+      data: {
+        user_id:        params.userId,
+        institution_id: params.institutionId,
+        // Deliberately logged as study_plan rather than a new AIFeature value:
+        // this exists only to order a plan, and `AIFeature` is a Postgres enum
+        // whose members cannot be dropped again if this turns out to be wrong.
+        feature:        'study_plan',
+        tokens_used:    response.input_tokens + response.output_tokens,
+        model:          response.model,
+      },
+    });
+
+    const parsed = parseJSONResponse<{ edges?: unknown }>(response.text, 'chapter prerequisites');
+    const raw = Array.isArray(parsed.edges) ? parsed.edges : [];
+    const edges = acceptPrerequisites(
+      raw.filter(
+        (e): e is { from: string; to: string; strength?: number } =>
+          !!e && typeof e === 'object'
+          && typeof (e as { from?: unknown }).from === 'string'
+          && typeof (e as { to?: unknown }).to === 'string',
+      ),
+      ids,
+    );
+
+    await ResourcePrereq.findOneAndUpdate(
+      { resource_id: params.resourceId },
+      { outline_key: key, edges, ai_model: response.model },
+      { upsert: true },
+    );
+
+    logger.info(
+      { resourceId: params.resourceId, proposed: raw.length, accepted: edges.length },
+      'Chapter prerequisites derived',
+    );
+    return edges;
+  } catch (err) {
+    logger.warn(
+      { err, resourceId: params.resourceId },
+      'Could not derive chapter prerequisites; the plan falls back to book order',
+    );
+    return [];
+  }
+}
+
+/** Hours of work the book represents, checkpoints included. */
+function estimateWorkHours(pagesLocated: number, chaptersUnlocated: number): number {
+  return (
+    (pagesLocated / PAGES_PER_HOUR + chaptersUnlocated * HOURS_PER_UNLOCATED_CHAPTER) *
+    CHECKPOINT_OVERHEAD
+  );
+}
+
+/** How many of the book's chapters the plan never mentions. */
+function uncoveredChapters(plan: ValidatedPlan, nodeIds: string[]): number {
+  const covered = new Set<string>();
+  for (const week of plan.weeks) {
+    for (const day of week.days) {
+      for (const task of day.tasks) covered.add(task.node_id);
+    }
+  }
+  return nodeIds.filter((id) => !covered.has(id)).length;
 }
 
 export interface ResourcePlanInput {
@@ -1446,27 +1444,43 @@ export async function generateResourcePlan(
     );
   }
 
-  // Real passages for the weakest chapters only — enough for the plan to say
-  // something specific about what to do there, without paying to embed the book.
-  const passages = await retrieveChunksForQueries(
-    params.resourceId,
-    grounding.weakest.map((w) => w.title),
-    2,
-  ).catch(() => grounding.weakest.map(() => []));
-
-  const weakDetail = grounding.weakest
-    .map((weak, i) => {
-      const texts = (passages[i] ?? []).map((p) => p.text).join(' ');
-      return texts ? `- "${weak.title}": ${texts.slice(0, 600)}` : '';
-    })
-    .filter(Boolean)
-    .join('\n');
+  // Passages used to be fetched here, for the weakest chapters only. They now
+  // come back with the grounding, for EVERY chapter — see `chapterPassages`.
+  //
+  // The graph is derived from those passages and cached against the book, so
+  // only the FIRST plan for a resource pays for it. Never throws: no graph means
+  // the plan is ordered front-to-back, which is what it did before.
+  const prerequisites = await getChapterPrerequisites({
+    resourceId:    params.resourceId,
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    chapters:      grounding.chapters,
+    passages:      grounding.passages,
+  });
 
   const ctx = await getLearnerContext(params.userId, params.institutionId);
   const today = new Date();
-  const weeksLeft = params.examDate
+
+  /**
+   * How long the plan runs, measured against the book rather than picked.
+   *
+   * It used to be "weeks until the exam, or 4" — and that 4 was doing a great
+   * deal of unexamined work, because it is the number every "just study" plan
+   * got regardless of whether the book was a 40-page handout or an 900-page
+   * textbook. The model was then told to fit the whole thing into four weeks
+   * inside a daily hours budget, which it cannot do, so it did the only thing
+   * available and quietly left chapters out. A plan that silently omits half a
+   * book is worse than a longer plan.
+   */
+  const weeklyHours = Math.max(1, params.dailyHours * params.studyDays.length);
+  const workHours = estimateWorkHours(grounding.pagesLocated, grounding.chaptersUnlocated);
+  const weeksNeeded = Math.max(1, Math.ceil(workHours / weeklyHours));
+  const weeksToExam = params.examDate
     ? Math.max(1, Math.ceil((params.examDate.getTime() - today.getTime()) / (7 * 86400000)))
-    : 4;
+    : null;
+  const weeksLeft = Math.min(MAX_PLAN_WEEKS, weeksToExam ?? weeksNeeded);
+  /** The exam is sooner than the reading takes — the model must be told, not left to discover it. */
+  const squeezed = weeksToExam !== null && weeksNeeded > weeksToExam;
 
   // Naming the weekday matters: given only "2026-07-31" the model reliably lays
   // week 1 out Monday-to-Sunday and schedules days that have already gone.
@@ -1481,17 +1495,27 @@ export async function generateResourcePlan(
 
 ${
   params.examDate
-    ? `Exam date: ${params.examDate.toISOString().split('T')[0]}\nWeeks available: ${weeksLeft}`
-    : `No exam deadline — build a balanced ${weeksLeft}-week rotation the student can repeat.`
+    ? `Exam date: ${params.examDate.toISOString().split('T')[0]}\nWeeks until the exam: ${weeksToExam}\nWrite out the next ${weeksLeft} week${weeksLeft === 1 ? '' : 's'} in detail.`
+    : `No exam deadline — this book is about ${weeksNeeded} week${weeksNeeded === 1 ? '' : 's'} of work at this pace, so plan ${weeksLeft} week${weeksLeft === 1 ? '' : 's'}.`
 }
 Available study hours per day: ${params.dailyHours}
 TODAY is ${todayISO} (${todayName}). Week 1 starts TODAY.
-The student studies on these days only: ${studyDayNames.join(', ')}.
+The student studies on these days only: ${studyDayNames.join(', ')} — ${weeklyHours} hours a week.
+
+How much there is to get through: ${grounding.nodeIds.length} chapters${
+    grounding.pagesLocated > 0 ? `, about ${grounding.pagesLocated} pages` : ''
+  }, which is roughly ${Math.round(workHours)} hours of reading and checkpoints.
+${
+  squeezed
+    ? `That is MORE than the ${weeksToExam !== null ? weeksToExam * weeklyHours : 0} hours left before the exam. Cover every chapter anyway: shorten the sittings, cut the practice tasks, lean on the checkpoints — but do NOT leave chapters out. A chapter missing from the plan is a chapter the student never opens.`
+    : ''
+}
 
 ${grounding.lines.join('\n')}
-${weakDetail ? `\nWhat those weak chapters actually cover:\n${weakDetail}\n` : ''}
+
 Rules:
 - Every task's "node_id" MUST be one of the node_id values listed above, copied exactly.
+- **Every chapter listed must appear at least once** across the ${weeksLeft} week${weeksLeft === 1 ? '' : 's'}.
 - **Every "date" must be ${todayISO} or later.** Never schedule a day that has already
   passed. Week 1 runs from ${todayISO} forward — if today is a Friday, week 1 starts on
   that Friday, it does NOT start on the Monday just gone.
@@ -1505,12 +1529,23 @@ Rules:
 - Every "read" task is followed on the SAME DAY by a "verify" task with the same
   node_id, "part" and "parts".
 - "detail" is ONE sentence saying what to do — no page numbers, they are added automatically.
+- **"read" tasks follow the order the chapters are listed above, first to last.** That
+  order already accounts for chapters that depend on earlier ones${
+    prerequisites.length > 0 ? ' — it is not simply the book\'s printed order' : ''
+  }. Do not
+  jump ahead: a later chapter is written assuming the earlier ones have been read, so
+  reading it first does not save time, it wastes the sitting.
+- A chapter split over several sittings is read part 1, then part 2, then part 3 — in
+  that order, on days in that order. Use the same "parts" total every time you schedule
+  that chapter.
 ${
   grounding.weakest.length > 0
-    ? `- Front-load the weakest chapters listed above and come back to them; a chapter the
-  student has already verified needs revision, not a full re-read.`
-    : `- Nothing has been measured on this book yet, so work through the chapters in the
-  order they are listed. Do not guess at which are hardest.`
+    ? `- The student is weak on the chapters named above. Come back to those with SHORT
+  "practice" tasks — 20 to 30 minutes — SPACED THROUGH the plan rather than bunched at
+  the start. A chapter they have already verified needs a return visit, not a re-read,
+  and revision works because it is spaced.`
+    : `- Nothing has been measured on this book yet, so do not guess at which chapters are
+  hardest and do not add revision passes. There is nothing to revise yet.`
 }
 
 Format as the specified JSON.`;
@@ -1536,7 +1571,7 @@ Format as the specified JSON.`;
     return parseJSONResponse<Record<string, unknown>>(response.text, 'resource study plan');
   };
 
-  const constraints = { startDate: today, studyDays: params.studyDays };
+  const constraints = { startDate: today, studyDays: params.studyDays, prerequisites };
   const first = validateResourcePlan(await request(), grounding.nodeIds, constraints);
 
   if (first.taskCount > 0) {
@@ -1544,6 +1579,16 @@ Format as the specified JSON.`;
       logger.warn(
         { resourceId: params.resourceId, dropped: first.dropped, reasons: first.reasons },
         'Resource plan tasks failed validation and were discarded',
+      );
+    }
+    // Coverage is asked for in the prompt and NOT enforced — appending the
+    // missing chapters would mean inventing days to put them on. Worth knowing
+    // about, though: "the AI skipped half my book" is otherwise invisible.
+    const uncovered = uncoveredChapters(first, grounding.nodeIds);
+    if (uncovered > 0) {
+      logger.warn(
+        { resourceId: params.resourceId, uncovered, chapters: grounding.nodeIds.length, weeks: weeksLeft },
+        'Resource plan left chapters unscheduled',
       );
     }
     return first;
@@ -2001,10 +2046,7 @@ Return ONLY JSON:
 export const aiService = {
   generateQuestions,
   streamAnswerFeedback,
-  generateStudyPlan,
-  updateStudyPlanTask,
   parseQuestionsFromText,
-  getStudyPlan,
   getAIFeedbackHistory,
   flagAIQuestion,
   extractSyllabusStructure,

@@ -138,3 +138,87 @@ export async function retrieveChunksForQueries(
   const queryEmbeddings = await embedTexts(queries, 'query');
   return queryEmbeddings.map((embedding) => rankByCosine(rankable, embedding, k));
 }
+
+export interface ChapterForPassages {
+  id: string;
+  title: string;
+  page_start: number | null;
+  page_end: number | null;
+}
+
+/**
+ * A few sentences of each chapter's own text, for EVERY chapter of a resource.
+ *
+ * The study planner used to see chapter titles and nothing else — so it decided
+ * what a chapter contained, how hard it was and what had to be read before it
+ * from the title alone. This is what it reads instead.
+ *
+ * **Nearly free, which is the only reason it can cover the whole book.** The
+ * resource's chunks are loaded once, and a chapter whose page range was located
+ * takes its passages by page — no embedding, no ranking, no network. Only the
+ * chapters with no usable range fall through to retrieval, and those go out as a
+ * SINGLE batched `embedTexts` call however many there are.
+ *
+ * Deliberately does NOT use {@link scopeToPages}: its fall back to the whole
+ * document when a window matches nothing is right for grounding one check and
+ * catastrophic here, where it would quietly hand chapter 3 the entire book. An
+ * empty window falls through to retrieval instead, which at least returns
+ * something about the right chapter.
+ */
+export async function chapterPassages(
+  resourceId: string,
+  chapters: ChapterForPassages[],
+  perChapter = 2,
+): Promise<Map<string, RetrievedChunk[]>> {
+  const passages = new Map<string, RetrievedChunk[]>();
+  if (chapters.length === 0) return passages;
+
+  const all = await ResourceChunk.find(
+    { resource_id: resourceId },
+    { text: 1, embedding: 1, page: 1, ordinal: 1 },
+  ).lean();
+  if (all.length === 0) return passages;
+
+  const needRetrieval: ChapterForPassages[] = [];
+
+  for (const chapter of chapters) {
+    const start = chapter.page_start;
+    if (typeof start !== 'number') {
+      needRetrieval.push(chapter);
+      continue;
+    }
+    const end = typeof chapter.page_end === 'number' ? chapter.page_end : Number.POSITIVE_INFINITY;
+
+    // The chapter's OPENING pages, in document order — a chapter introduces
+    // itself far better than its most cosine-similar passage does.
+    const inWindow = all
+      .filter((c) => typeof c.page === 'number' && c.page >= start && c.page <= end)
+      .sort((a, b) => a.ordinal - b.ordinal)
+      .slice(0, perChapter);
+
+    if (inWindow.length === 0) {
+      needRetrieval.push(chapter);
+      continue;
+    }
+    passages.set(
+      chapter.id,
+      inWindow.map((c) => ({ text: c.text, page: c.page, ordinal: c.ordinal, score: 1 })),
+    );
+  }
+
+  if (needRetrieval.length > 0) {
+    const rankable = all.map((c) => ({
+      text:      c.text,
+      embedding: c.embedding,
+      page:      c.page,
+      ordinal:   c.ordinal,
+    }));
+    const embeddings = await embedTexts(needRetrieval.map((c) => c.title), 'query');
+    embeddings.forEach((embedding, i) => {
+      const chapter = needRetrieval[i];
+      if (chapter) passages.set(chapter.id, rankByCosine(rankable, embedding, perChapter));
+    });
+  }
+
+  return passages;
+}

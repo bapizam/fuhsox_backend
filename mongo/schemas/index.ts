@@ -306,6 +306,72 @@ const ResourceChunkSchema = new Schema<IResourceChunk>(
 export const ResourceChunk = model<IResourceChunk>('ResourceChunk', ResourceChunkSchema);
 
 
+// ─── Chapter prerequisites (what has to be read before what) ───────────────────
+
+export interface IPrereqEdge {
+  /** SyllabusNode.id that must be read FIRST. */
+  from: string;
+  /** SyllabusNode.id that depends on it. */
+  to: string;
+  /** 0..1 confidence. Ranks the edge; never gates it. */
+  strength: number;
+}
+
+/**
+ * The dependency graph over one book's chapters, derived once and reused.
+ *
+ * **A property of the BOOK, not of the student.** Chapter 9 assuming chapter 4 is
+ * true for everyone who owns the book and does not change when a student's
+ * mastery does — so it is derived on the first plan and every plan after that
+ * reads it for free. That caching is the whole reason it can afford to be an AI
+ * call at all against a 20/day budget shared with generation and feedback.
+ *
+ * Lives in Mongo beside `ResourceChunk` rather than in Postgres deliberately:
+ * this is derived, rebuildable, resource-scoped data with no relational duties,
+ * and putting it here costs no migration.
+ */
+export interface IResourcePrereq extends Document {
+  _id: Types.ObjectId;
+  /** LearningResource.id (Postgres uuid). One document per resource. */
+  resource_id: string;
+  /**
+   * Fingerprint of the chapter list the edges were derived from. Re-extracting
+   * an outline mints new SyllabusNode ids, which would leave every edge pointing
+   * at a chapter that no longer exists — a stale key misses the cache and the
+   * graph is rebuilt rather than silently applied to the wrong book.
+   */
+  outline_key: string;
+  edges: IPrereqEdge[];
+  /**
+   * Which model proposed them, for when a graph turns out to be nonsense.
+   * Named `ai_model` rather than `model` because `Document.model` is Mongoose's
+   * own and shadowing it is a type error.
+   */
+  ai_model: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const ResourcePrereqSchema = new Schema<IResourcePrereq>(
+  {
+    resource_id: { type: String, required: true, unique: true, index: true },
+    outline_key: { type: String, required: true },
+    edges: [
+      {
+        _id:      false,
+        from:     { type: String, required: true },
+        to:       { type: String, required: true },
+        strength: { type: Number, default: 0.5 },
+      },
+    ],
+    ai_model: { type: String, required: true },
+  },
+  { timestamps: true },
+);
+
+export const ResourcePrereq = model<IResourcePrereq>('ResourcePrereq', ResourcePrereqSchema);
+
+
 // ─── Micro-lessons (test-explain-retest — reformation Phase 3C) ────────────────
 
 export interface IMicroLessonSection {

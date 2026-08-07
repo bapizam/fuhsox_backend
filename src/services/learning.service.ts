@@ -756,27 +756,17 @@ export async function startMasteryCheck(params: {
 }
 
 /**
- * Start a check from a study-plan task's topic — the evidence gate that replaced
- * the plan's "I've studied" checkbox.
+ * Begin a mastery check for a CHAPTER — the study plan's evidence gate.
  *
- * The plan's AI tasks are free-text topics with no objective row, so this upserts
- * a durable objective keyed by (user, subject, statement=topic). Deterministic on
- * purpose: verifying the same task again reuses the objective AND its cached
- * question pool, so a re-check costs no AI budget — and the topic's mastery, decay
- * and readiness all flow into the same learner model as chapter objectives, rather
- * than living in a parallel "did they tick it" world.
- */
-/**
- * Begin a mastery check for a CHAPTER — the per-resource plan's evidence gate.
- *
- * This exists to close a hole that `startTopicMasteryCheck` (below) cannot. That
- * one takes a free-text `(subject, topic)` pair from a plan task and matches an
- * objective by exact string; a paraphrased topic misses and it mints a brand-new
- * objective with `resource_id: null`. `ensureQuestionPool` then does
+ * This closed a hole in the topic-based check it replaced (removed along with
+ * the multi-subject planner it served). That one took a free-text
+ * `(subject, topic)` pair from a plan task and matched an objective by exact
+ * string; a paraphrased topic missed and it minted a brand-new objective with
+ * `resource_id: null`. `ensureQuestionPool` then does
  * `params.resourceId ? retrieveChunks(...) : []` — so the questions that go on to
- * SET the student's mastery are generated from the model's world knowledge rather
- * than the textbook they uploaded, and the learner model quietly fills with
- * duplicate orphans that dilute readiness.
+ * SET the student's mastery were generated from the model's world knowledge
+ * rather than the textbook they uploaded, and the learner model quietly filled
+ * with duplicate orphans that diluted readiness.
  *
  * Addressing the chapter by `node_id` removes the guesswork entirely. The
  * objectives come from `generateObjectivesForNode`, which is already
@@ -921,36 +911,6 @@ export async function startNodeMasteryCheck(params: {
       MASTERY_CHECK.MAX_ATTEMPTS_PER_DAY - ((await getCount(redisKey)) || 0),
     ),
   };
-}
-
-export async function startTopicMasteryCheck(params: {
-  userId:        string;
-  institutionId: string;
-  subject:       string;
-  topic:         string;
-}): Promise<StartedMasteryCheck> {
-  const subject = params.subject.trim();
-  const statement = params.topic.trim();
-  if (!subject || !statement) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'A subject and topic are required to verify a task');
-  }
-
-  const existing = await prisma.learningObjective.findFirst({
-    where: { user_id: params.userId, subject, statement },
-  });
-
-  const objective =
-    existing ??
-    (await prisma.learningObjective.create({
-      data: {
-        user_id:     params.userId,
-        subject,
-        statement,
-        bloom_level: 'understand',
-      },
-    }));
-
-  return beginCheckForObjective(objective, params.userId, params.institutionId);
 }
 
 export interface BloomBreakdown {

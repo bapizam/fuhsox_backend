@@ -3,10 +3,7 @@ import authenticate from '@middleware/authenticate';
 import scopeToInstitution from '@middleware/institutionScope';
 import {
   generateAIQuestions,
-  generateStudyPlan,
   getAIUsageToday,
-  getMyStudyPlan,
-  updateStudyPlanTask,
   generateSubjectPlan,
   getSubjectPlan,
   listSubjectPlans,
@@ -27,19 +24,17 @@ router.get('/usage', getAIUsageToday);
 // POST /api/v1/ai/generate-questions    — generate practice questions with Claude
 router.post('/generate-questions', generateAIQuestions);
 
-// POST /api/v1/ai/generate-plan         — generate personalised study plan
-router.post('/generate-plan', generateStudyPlan);
-
-// GET  /api/v1/ai/plan/me               — retrieve current study plan
-router.get('/plan/me', getMyStudyPlan);
-
-// PATCH /api/v1/ai/plan/me/task         — toggle one plan task's completed flag
-router.patch('/plan/me/task', updateStudyPlanTask);
-
-// ─── Per-resource study plan (single-subject plan, Phase 2) ──────────────────
+// ─── Study plans ─────────────────────────────────────────────────────────────
 // Anchored to ONE uploaded resource, so every task names a real SyllabusNode and
-// carries its page range. The multi-subject `/generate-plan` above is untouched
-// and both continue to work.
+// carries its page range.
+//
+// `POST /generate-plan`, `GET /plan/me` and `PATCH /plan/me/task` — the older
+// planner over a free-text list of subjects — were RETIRED here. It could not
+// ground itself in anything the student owned, could not sequence its tasks, and
+// emitted a `recommended_question_set` string that pointed at nothing; leaving it
+// live meant a student could hold two plans that disagreed about Tuesday. Its
+// Mongo collections are deliberately untouched, so nothing anyone generated has
+// been destroyed.
 // POST  /api/v1/ai/plan/resource        — generate. ONE AI call (a second only if
 //       the first returned nothing usable). 422 when the resource has no outline.
 router.post('/plan/resource', generateSubjectPlan);

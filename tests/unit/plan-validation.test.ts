@@ -240,6 +240,151 @@ describe('paired verifies', () => {
   });
 });
 
+describe('reading order', () => {
+  // The third scheduling rule the prompt could not hold on its own. A textbook's
+  // chapter 9 is written assuming chapter 2 has been read, so a plan that opens
+  // on chapter 9 is not untidy — it is unreadable.
+  const CHAPTERS = ['c1', 'c2', 'c3', 'c4'];
+
+  /** One reading task per day, in the order given. */
+  const reading = (nodeIds: string[], sittings: number[] = []) => {
+    const total = sittings.length > 0 ? Math.max(...sittings) : 1;
+    return {
+      weeks: [
+        {
+          week_number: 1,
+          days: nodeIds.map((node_id, i) => {
+            const part = sittings[i];
+            return {
+              day:   'D',
+              date:  `2026-08-0${i + 3}`,
+              tasks: [
+                {
+                  node_id,
+                  activity:      'read',
+                  duration_mins: 45,
+                  ...(part === undefined ? {} : { part, parts: total }),
+                },
+              ],
+            };
+          }),
+        },
+      ],
+    };
+  };
+
+  const readsOf = (result: ReturnType<typeof validateResourcePlan>) =>
+    result.weeks.flatMap((w) => w.days.flatMap((d) => d.tasks.filter((t) => t.activity === 'read')));
+
+  it('puts chapters back in the book’s order', () => {
+    const result = validateResourcePlan(reading(['c3', 'c1', 'c4', 'c2']), CHAPTERS);
+    expect(readsOf(result).map((t) => t.node_id)).toEqual(['c1', 'c2', 'c3', 'c4']);
+  });
+
+  it('leaves an already-sequential plan exactly as it found it', () => {
+    const result = validateResourcePlan(reading(['c1', 'c2', 'c3']), CHAPTERS);
+    expect(readsOf(result).map((t) => t.node_id)).toEqual(['c1', 'c2', 'c3']);
+  });
+
+  it('reads a split chapter part 1 before part 2', () => {
+    const result = validateResourcePlan(reading(['c1', 'c1', 'c1'], [3, 1, 2]), CHAPTERS);
+    expect(readsOf(result).map((t) => t.part)).toEqual([1, 2, 3]);
+  });
+
+  it('moves the task whole, so its wording follows its chapter', () => {
+    const result = validateResourcePlan(
+      {
+        weeks: [
+          {
+            week_number: 1,
+            days: [
+              { date: '2026-08-03', tasks: [task({ node_id: 'c2', detail: 'the second one' })] },
+              { date: '2026-08-04', tasks: [task({ node_id: 'c1', detail: 'the first one' })] },
+            ],
+          },
+        ],
+      },
+      CHAPTERS,
+    );
+    const reads = readsOf(result);
+    expect(reads.map((t) => t.node_id)).toEqual(['c1', 'c2']);
+    expect(reads.map((t) => t.detail)).toEqual(['the first one', 'the second one']);
+  });
+
+  it('follows the prerequisite graph over the book’s printed order', () => {
+    // The foundations chapter printed last is the case ordinal alone cannot see.
+    const result = validateResourcePlan(reading(['c1', 'c2', 'c3', 'c4']), CHAPTERS, {
+      prerequisites: [{ from: 'c4', to: 'c1', strength: 0.9 }],
+    });
+    expect(readsOf(result).map((t) => t.node_id)).toEqual(['c4', 'c1', 'c2', 'c3']);
+  });
+
+  it('keeps book order wherever the graph says nothing', () => {
+    const result = validateResourcePlan(reading(['c3', 'c1', 'c4', 'c2']), CHAPTERS, {
+      prerequisites: [{ from: 'c2', to: 'c1', strength: 0.8 }],
+    });
+    // Only c1's dependency on c2 is asserted; everything else stays as printed.
+    expect(readsOf(result).map((t) => t.node_id)).toEqual(['c2', 'c1', 'c3', 'c4']);
+  });
+
+  it('re-pairs the checkpoints onto the days the reading moved to', () => {
+    // The model's checkpoints were written for the days it chose; once the
+    // reading moves, a checkpoint left behind would ask about pages that day no
+    // longer covers.
+    const result = validateResourcePlan(
+      {
+        weeks: [
+          {
+            week_number: 1,
+            days: [
+              {
+                date:  '2026-08-03',
+                tasks: [task({ node_id: 'c3' }), task({ node_id: 'c3', activity: 'verify' })],
+              },
+              {
+                date:  '2026-08-04',
+                tasks: [task({ node_id: 'c1' }), task({ node_id: 'c1', activity: 'verify' })],
+              },
+            ],
+          },
+        ],
+      },
+      CHAPTERS,
+    );
+    const days = result.weeks[0]?.days ?? [];
+    expect(days[0]?.tasks.map((t) => `${t.activity}:${t.node_id}`)).toEqual(['read:c1', 'verify:c1']);
+    expect(days[1]?.tasks.map((t) => `${t.activity}:${t.node_id}`)).toEqual(['read:c3', 'verify:c3']);
+  });
+
+  it('leaves practice tasks where they are', () => {
+    // Only reading has an order to get wrong; practice is extra work on whatever
+    // the day already covers.
+    const result = validateResourcePlan(
+      {
+        weeks: [
+          {
+            week_number: 1,
+            days: [
+              {
+                date: '2026-08-03',
+                tasks: [
+                  task({ node_id: 'c2', activity: 'practice' }),
+                  task({ node_id: 'c3' }),
+                  task({ node_id: 'c1' }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      CHAPTERS,
+    );
+    const day = result.weeks[0]?.days[0]?.tasks ?? [];
+    expect(day[0]).toMatchObject({ activity: 'practice', node_id: 'c2' });
+    expect(day.slice(1, 3).map((t) => t.node_id)).toEqual(['c1', 'c3']);
+  });
+});
+
 describe('study days', () => {
   // The model was already told, in capitals, not to schedule days that had
   // passed — and did. A scheduling rule that only lives in the prompt is a

@@ -6,7 +6,7 @@
  * nothing, and why tasks are free-text topics that no longer resolve to anything
  * real. This module is the boundary that stops the same thing happening again.
  *
- * Two rules carry the weight:
+ * Three rules carry the weight:
  *
  * 1. **A task must name a chapter that exists.** `node_id` is checked against an
  *    allow-list built from the resource's own `SyllabusNode` rows, so the model
@@ -15,11 +15,13 @@
  *    are filled in by the caller from the database. A model that hallucinates
  *    "pp. 340–356" of a 200-page book therefore cannot mislead anyone — it can
  *    only pick a chapter, never describe one.
+ * 3. **New material is read in the book's own order.** See {@link orderReading}.
  *
  * Pure — no I/O, no AI — so it is unit-tested directly.
  */
 import { z } from 'zod';
 import { MAX_PARTS } from '@utils/page-windows';
+import { chapterRank, type PrereqEdge } from '@utils/chapter-order';
 
 /** Longer than a study session anyone actually does in one sitting. */
 const MAX_TASK_MINS = 600;
@@ -129,6 +131,17 @@ export interface PlanConstraints {
    * prompt is a suggestion. Omit to accept every weekday.
    */
   studyDays?: Iterable<number>;
+  /**
+   * What this book says has to be read before what, from
+   * `ai.service → getChapterPrerequisites`.
+   *
+   * The edges are turned into a rank here rather than taken as one, so a caller
+   * cannot hand over an ordering inconsistent with the graph it came from. Omit
+   * — or pass none, which is what a book whose derivation failed or was never
+   * paid for gets — and {@link orderReading} falls back to the book's own order,
+   * exactly as it behaved before the graph existed.
+   */
+  prerequisites?: readonly PrereqEdge[];
 }
 
 /** A task's identity for pairing: the same chapter AND the same sitting. */
@@ -147,8 +160,15 @@ function taskKey(task: ValidatedTask): string {
  *
  * `practice` is left alone: it is optional extra work, not a claim to have
  * covered anything.
+ *
+ * `supplied` carries checkpoints the model wrote that {@link orderReading} had to
+ * lift out of the schedule, keyed by sitting — the model's own duration and
+ * wording survive being re-placed on the right day.
  */
-function withPairedVerifies(tasks: ValidatedTask[]): ValidatedTask[] {
+function withPairedVerifies(
+  tasks: ValidatedTask[],
+  supplied: Map<string, ValidatedTask>,
+): ValidatedTask[] {
   const verified = new Set(
     tasks.filter((t) => t.activity === 'verify').map(taskKey),
   );
@@ -159,10 +179,12 @@ function withPairedVerifies(tasks: ValidatedTask[]): ValidatedTask[] {
     const key = taskKey(task);
     if (verified.has(key)) continue;
     verified.add(key);
+    const model = supplied.get(key);
     missing.push({
       node_id:       task.node_id,
       activity:      'verify',
-      duration_mins: VERIFY_MINS,
+      duration_mins: model?.duration_mins ?? VERIFY_MINS,
+      ...(model?.detail ? { detail: model.detail } : {}),
       part:          task.part,
       parts:         task.parts,
     });
@@ -171,12 +193,137 @@ function withPairedVerifies(tasks: ValidatedTask[]): ValidatedTask[] {
   return missing.length > 0 ? [...tasks, ...missing] : tasks;
 }
 
+/** Where one reading task sits: the day's task array, and its index in it. */
+interface ReadSlot {
+  tasks: ValidatedTask[];
+  index: number;
+}
+
+/**
+ * Rewrite the reading order without touching the shape of the schedule.
+ *
+ * **This is the third prompt-only rule to have failed.** The model is told, and
+ * was told about past dates and about study days before that, that a book is
+ * worked through in the order it presents itself unless a chapter is known to be
+ * weak. It does it most of the time — and then hands back a plan that reads
+ * chapter 9 in week one and chapter 2 in week three, or the second half of a
+ * chapter before the first. Sequence is not decoration in a textbook: chapter 9
+ * is written on the assumption that chapter 2 has been read, so getting it wrong
+ * does not make the plan slightly untidy, it makes the reading incomprehensible.
+ *
+ * So the model keeps everything it is actually good at — how many sittings a
+ * chapter takes, which days carry work, how long each one runs, what to do in it
+ * — and loses only the choice of WHICH chapter lands in each reading slot. The
+ * slots are collected in schedule order, their payloads sorted by `rank` and
+ * then by sitting, and put back.
+ *
+ * `rank` is the book's own order until the prerequisite graph says otherwise
+ * (see `utils/chapter-order`), so on a book with no derived edges this is
+ * front-to-back and nothing else.
+ *
+ * **Only `read` is touched.** `practice` is where revision lives — a short
+ * return pass over a chapter the student is weak in — and revision is *supposed*
+ * to be spaced through the plan rather than sorted into the reading sequence.
+ * Leaving it alone is what lets the reading be strictly ordered without the plan
+ * losing the ability to come back to things.
+ *
+ * Returns whether anything actually moved, because if it did, the checkpoints
+ * the model wrote are now pinned to days that no longer hold the reading they
+ * were checking, and have to be re-paired.
+ */
+function orderReading(weeks: ValidatedWeek[], rank: Map<string, number>): boolean {
+  const slots: ReadSlot[] = [];
+
+  for (const week of weeks) {
+    for (const day of week.days) {
+      day.tasks.forEach((task, index) => {
+        if (task.activity === 'read') slots.push({ tasks: day.tasks, index });
+      });
+    }
+  }
+
+  return permute(
+    slots,
+    (a, b) => (rank.get(a.node_id) ?? 0) - (rank.get(b.node_id) ?? 0) || a.part - b.part,
+  );
+}
+
+/**
+ * Sort the payloads of `slots` among themselves and write them back in place.
+ *
+ * The whole task moves, not just its chapter id: a task's wording and its length
+ * describe the chapter it is about, so leaving them behind would caption the
+ * wrong reading. Ties keep their original order, so a sort that decides nothing
+ * changes nothing.
+ */
+function permute(
+  slots: ReadSlot[],
+  compare: (a: ValidatedTask, b: ValidatedTask) => number,
+): boolean {
+  if (slots.length < 2) return false;
+
+  const before = slots.map((slot) => slot.tasks[slot.index]);
+  const after = before
+    .map((task, i) => ({ task, i }))
+    .sort((a, b) => compare(a.task, b.task) || a.i - b.i)
+    .map((entry) => entry.task);
+
+  let moved = false;
+  slots.forEach((slot, i) => {
+    if (after[i] !== before[i]) moved = true;
+    slot.tasks[slot.index] = after[i];
+  });
+  return moved;
+}
+
+/**
+ * Put a checkpoint after every sitting, in every day.
+ *
+ * When the reading has been reordered the model's own checkpoints are lifted out
+ * first: each was written for whatever the model had scheduled that day, and the
+ * day has since changed under it. What they said survives in `supplied` and is
+ * re-attached to the sitting it belongs to, wherever that ended up.
+ */
+function pairVerifies(weeks: ValidatedWeek[], reordered: boolean): void {
+  const supplied = new Map<string, ValidatedTask>();
+
+  if (reordered) {
+    for (const week of weeks) {
+      for (const day of week.days) {
+        for (const task of day.tasks) {
+          if (task.activity === 'verify') supplied.set(taskKey(task), task);
+        }
+        day.tasks = day.tasks.filter((task) => task.activity !== 'verify');
+      }
+    }
+  }
+
+  for (const week of weeks) {
+    for (const day of week.days) {
+      day.tasks = withPairedVerifies(day.tasks, supplied);
+    }
+  }
+}
+
+function countTasks(weeks: ValidatedWeek[]): number {
+  return weeks.reduce(
+    (total, week) => total + week.days.reduce((sum, day) => sum + day.tasks.length, 0),
+    0,
+  );
+}
+
+/**
+ * @param allowedNodeIds every chapter of the resource, **in the order the book
+ * presents them**. Membership is the allow-list; position is the fallback
+ * reading order, used wherever `constraints.prerequisites` says nothing.
+ */
 export function validateResourcePlan(
   raw: unknown,
   allowedNodeIds: Iterable<string>,
   constraints: PlanConstraints = {},
 ): ValidatedPlan {
   const allowed = new Set(allowedNodeIds);
+  const rank = chapterRank([...allowed], constraints.prerequisites ?? []);
   const reasons = new Set<string>();
   const { startDate } = constraints;
   const studyDays = constraints.studyDays ? new Set(constraints.studyDays) : null;
@@ -186,7 +333,6 @@ export function validateResourcePlan(
     startDate.getUTCDate(),
   ) / 86400000) : null;
   let dropped = 0;
-  let taskCount = 0;
 
   const parsedPlan = planSchema.safeParse(raw);
   if (!parsedPlan.success) {
@@ -260,19 +406,16 @@ export function validateResourcePlan(
           part,
           parts,
         });
-        taskCount += 1;
       }
 
-      // A day with nothing left to do is not a day.
+      // A day with nothing left to do is not a day. Checkpoints are paired in a
+      // second pass, once the reading order is settled — see `orderReading`.
       if (tasks.length === 0) continue;
-
-      const paired = withPairedVerifies(tasks);
-      taskCount += paired.length - tasks.length;
 
       days.push({
         day:   day.data.day ?? '',
         date:  day.data.date ?? '',
-        tasks: paired,
+        tasks,
       });
     }
 
@@ -282,6 +425,9 @@ export function validateResourcePlan(
     // empty week would otherwise leave a gap ("Week 1, Week 3") in the UI.
     weeks.push({ week_number: weeks.length + 1, days });
   }
+
+  pairVerifies(weeks, orderReading(weeks, rank));
+  const taskCount = countTasks(weeks);
 
   const milestones = (parsedPlan.data.milestones ?? [])
     .filter((m): m is string => typeof m === 'string')

@@ -16,8 +16,7 @@ import { AppError } from '@typings/models';
 import { UPLOAD, REDIS_KEYS, TTL } from '@config/constants';
 import { get as redisGet, set as redisSet, getCount, getTodayWAT, getEndOfDayTTL } from '@lib/redis';
 import prisma from '@config/database';
-import logger from '@lib/logger';
-import { Message, StudyPlan, StudyPlanVersion } from '../../mongo/schemas';
+import { Message } from '../../mongo/schemas';
 
 // ─── Multer for avatar uploads ─────────────────────────────────────────────────
 
@@ -318,74 +317,6 @@ export const generateAIQuestions = asyncHandler(async (req: Request, res: Respon
   });
   res.status(200).json(ok(result));
 });
-
-export const generateStudyPlan = asyncHandler(async (req: Request, res: Response) => {
-  const schema = z.object({
-    subjects:    z.array(z.string().min(1)).min(1).max(10),
-    // Optional: a "just study" (ongoing) plan has no exam to count down from.
-    exam_date:   z.string().datetime().optional(),
-    daily_hours: z.number().positive().max(16),
-  });
-
-  const { subjects, exam_date, daily_hours } = schema.parse(req.body);
-  const examDate = exam_date ? new Date(exam_date) : null;
-
-  const plan = await aiService.generateStudyPlan({
-    userId:        req.user.id,
-    institutionId: req.institutionId,
-    subjects,
-    examDate,
-    dailyHours:    daily_hours,
-  });
-
-  const planFields = {
-    user_id:        req.user.id,
-    institution_id: req.institutionId,
-    subjects,
-    exam_date:      examDate,
-    daily_hours,
-    ...(plan),
-  };
-
-  // Save/update the LIVE study plan in MongoDB (one document per user).
-  await StudyPlan.findOneAndUpdate({ user_id: req.user.id }, planFields, {
-    upsert: true,
-    new:    true,
-  });
-
-  // …and append an immutable snapshot for the history timeline. This upsert
-  // overwrites the previous plan, so without the snapshot the student's earlier
-  // plans were simply destroyed. Best-effort: the history is a nicety and must
-  // never fail a generation the student has already paid an AI credit for.
-  try {
-    // Read off `plan` (the AI payload), not `planFields` — spreading a
-    // `Record<string, unknown>` adds no known keys to the object's type.
-    const weeks = Array.isArray(plan['weeks']) ? (plan['weeks'] as unknown[]) : [];
-    await StudyPlanVersion.create({
-      ...planFields,
-      total_weeks: weeks.length,
-      total_tasks: countPlanTasks(weeks),
-    });
-  } catch (err) {
-    logger.warn({ err, userId: req.user.id }, 'Failed to snapshot study plan version');
-  }
-
-  res.status(200).json(ok(plan));
-});
-
-/** Total tasks across a plan's weeks/days, defensively — the plan is AI-shaped. */
-function countPlanTasks(weeks: unknown[]): number {
-  let count = 0;
-  for (const week of weeks) {
-    const days = (week as { days?: unknown[] })?.days;
-    if (!Array.isArray(days)) continue;
-    for (const day of days) {
-      const tasks = (day as { tasks?: unknown[] })?.tasks;
-      if (Array.isArray(tasks)) count += tasks.length;
-    }
-  }
-  return count;
-}
 
 /**
  * GET /ai/history — the unified AI timeline (forged questions, tutor feedback,
@@ -1009,23 +940,6 @@ export const updateSubjectPlanTaskRead = asyncHandler(async (req: Request, res: 
     read:       body.read,
   });
 
-  res.status(200).json(ok({ plan }));
-});
-
-export const getMyStudyPlan = asyncHandler(async (req: Request, res: Response) => {
-  const plan = await aiService.getStudyPlan(req.user.id);
-  res.status(200).json(ok({ plan }));
-});
-
-export const updateStudyPlanTask = asyncHandler(async (req: Request, res: Response) => {
-  const body = z.object({
-    week_number: z.number().int().positive(),
-    date:        z.string().min(1),
-    task_index:  z.number().int().min(0),
-    completed:   z.boolean(),
-  }).parse(req.body);
-
-  const plan = await aiService.updateStudyPlanTask(req.user.id, body);
   res.status(200).json(ok({ plan }));
 });
 
