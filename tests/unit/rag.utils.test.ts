@@ -1,5 +1,13 @@
 import { chunkText } from '@lib/chunk';
-import { cosine, rankByCosine, scopeToPages } from '@lib/retrieval';
+import {
+  LEGACY_SIGNATURE,
+  cosine,
+  matchesSignature,
+  rankByCosine,
+  scopeToPages,
+  usableChunks,
+  type SignedChunk,
+} from '@lib/retrieval';
 
 describe('chunkText', () => {
   it('returns nothing for empty/whitespace input', () => {
@@ -108,5 +116,68 @@ describe('scopeToPages', () => {
     expect(scopeToPages(unpaged, { page_start: 10, page_end: 20 })).toHaveLength(2);
     // Same when the pages exist but none land in the window.
     expect(scopeToPages(chunks, { page_start: 500, page_end: 600 })).toHaveLength(4);
+  });
+});
+
+describe('matchesSignature', () => {
+  const legacy = LEGACY_SIGNATURE;
+  const newer = { model: 'text-embedding-005', dim: 1024 };
+
+  it('matches a stamped chunk against the same model + dim', () => {
+    expect(matchesSignature({ embedding_model: newer.model, embedding_dim: newer.dim }, newer)).toBe(true);
+  });
+
+  it('rejects a stamped chunk from a different model', () => {
+    expect(matchesSignature({ embedding_model: legacy.model, embedding_dim: legacy.dim }, newer)).toBe(false);
+  });
+
+  it('rejects a same-model chunk whose dimensionality changed', () => {
+    // A model revision that keeps its name but changes width would otherwise
+    // slip through and produce cosine scores over ragged vectors.
+    expect(matchesSignature({ embedding_model: newer.model, embedding_dim: 768 }, newer)).toBe(false);
+  });
+
+  it('treats an unstamped chunk as the legacy embedding', () => {
+    // Chunks written before provenance tracking really were produced by
+    // LEGACY_SIGNATURE, so they stay usable while that is still current...
+    expect(matchesSignature({}, legacy)).toBe(true);
+    expect(matchesSignature({ embedding_model: null, embedding_dim: null }, legacy)).toBe(true);
+  });
+
+  it('stops trusting unstamped chunks the moment the model changes', () => {
+    // ...and become unusable the day it is not, with no backfill needed first.
+    // This is the whole point: the legacy fallback closes itself.
+    expect(matchesSignature({}, newer)).toBe(false);
+  });
+});
+
+describe('usableChunks', () => {
+  const current = LEGACY_SIGNATURE;
+
+  it('keeps only the comparable chunks', () => {
+    const stored = [
+      { text: 'legacy-unstamped' },
+      { text: 'legacy-stamped', embedding_model: current.model, embedding_dim: current.dim },
+      { text: 'foreign', embedding_model: 'text-embedding-005', embedding_dim: 1024 },
+    ];
+    expect(usableChunks(stored, current).map((c) => c.text)).toEqual([
+      'legacy-unstamped',
+      'legacy-stamped',
+    ]);
+  });
+
+  it('returns [] rather than ranking a wholly mismatched set', () => {
+    // [] is the same shape as "never ingested", which every caller already
+    // handles by falling back to ungrounded generation. Ranking mismatched
+    // vectors would instead produce confident nonsense.
+    const stored = [{ text: 'foreign', embedding_model: 'text-embedding-005', embedding_dim: 1024 }];
+    expect(usableChunks(stored, current)).toEqual([]);
+  });
+
+  it('leaves an all-comparable set untouched', () => {
+    // Annotated because `SignedChunk` is all-optional: a literal carrying none
+    // of its fields has no overlap, and TS's weak-type check rejects it.
+    const stored: (SignedChunk & { text: string })[] = [{ text: 'a' }, { text: 'b' }];
+    expect(usableChunks(stored, current)).toHaveLength(2);
   });
 });

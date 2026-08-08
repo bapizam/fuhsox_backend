@@ -129,7 +129,9 @@ fuhsox-backend/
 ### Prerequisites
 
 - Node.js ≥ 20
-- Docker + Docker Compose (for local databases)
+- PostgreSQL 16, MongoDB 7, Redis 7 — installed locally. See
+  [`docs/local-setup.md`](docs/local-setup.md) for per-platform instructions and
+  the exact roles/databases the app expects.
 
 ### 1 — Clone and install
 
@@ -148,10 +150,17 @@ cp .env.example .env
 
 ### 3 — Start local infrastructure
 
+Make sure PostgreSQL, MongoDB and Redis are running, and that both the `fuhsox`
+and `fuhsox_test` databases exist — the integration suite connects to the latter
+and fails at startup without it.
+
 ```bash
-docker compose up -d
-# Starts: PostgreSQL, MongoDB, Redis, MailHog (SMTP web UI at http://localhost:8025)
+pg_isready -h localhost -p 5432     # PostgreSQL
+mongosh --eval 'db.adminCommand("ping")'
+redis-cli -a fuhsox_redis_pass ping
 ```
+
+First time on this machine? Follow [`docs/local-setup.md`](docs/local-setup.md).
 
 ### 4 — Database setup
 
@@ -572,25 +581,17 @@ npm run build
 npm start
 ```
 
-### Docker (recommended for production)
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run db:generate && npm run build
+### Render (the deployed path)
 
-FROM node:20-alpine AS runner
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/email-templates ./email-templates
-COPY --from=builder /app/prisma ./prisma
-COPY package.json ./
-EXPOSE 4000
-CMD ["npm", "start"]
+The API runs on Render as a **native Node service** — no container image is
+built. Render installs, migrates and compiles from the repo:
+
 ```
+npm install && npm run db:generate && npm run db:deploy && npm run build
+```
+
+and starts it with `npm run start`. Full walkthrough, including the environment
+variables the service needs, is in [`docs/hosting-guide.md`](docs/hosting-guide.md).
 
 ### Separate worker process
 For production scale, run the API and workers as separate processes or containers:

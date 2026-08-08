@@ -12,6 +12,7 @@ import { gamificationService } from './gamification.service';
 import logger from '@lib/logger';
 import { getIO } from '@lib/socket-ref';
 import { aiService, exactMatchGrade, type AnswerToGrade } from './ai.service';
+import { gradedScore, hasAnswerKey } from '@utils/gradability';
 
 // ─── Empirical difficulty (reformation Phase 2) ────────────────────────────────
 
@@ -216,7 +217,8 @@ export async function submitAnswer(params: {
 
   let gradeSource: {
     question_text:  string;
-    correct_answer: string;
+    /** Null for an imported item whose answer key was never published. */
+    correct_answer: string | null;
     explanation?:   string;
     course_code:    string;
     topic:          string;
@@ -276,21 +278,30 @@ export async function submitAnswer(params: {
   // common path (mastery checks) batches to a single call. If students start
   // hitting AI_LIMIT_REACHED here, the fix is to fold the verdict into the feedback
   // stream so a wrong typed answer costs one credit rather than two.
-  const isCorrect = isFreeResponse(gradeSource.question_type)
-    ? (
-        await aiService.gradeAnswer({
-          item: {
-            question_text:  gradeSource.question_text,
-            correct_answer: gradeSource.correct_answer,
-            rubric:         gradeSource.rubric,
-            question_type:  gradeSource.question_type,
-            student_answer: chosenAnswer,
-          },
-          userId,
-          institutionId: session.institution_id,
-        })
-      ).is_correct
-    : exactMatchGrade(chosenAnswer, gradeSource.correct_answer);
+  // FAIL-CLOSED: an item with no answer key is ungradable, not wrong. Note this
+  // short-circuits BEFORE the AI grader — asking a model to mark an answer
+  // against a key we don't have is how an invented answer becomes a stored fact.
+  const key = gradeSource.correct_answer;
+  const gradable = hasAnswerKey(key);
+
+  const isCorrect =
+    !gradable || key === null
+      ? false
+      : isFreeResponse(gradeSource.question_type)
+        ? (
+            await aiService.gradeAnswer({
+              item: {
+                question_text:  gradeSource.question_text,
+                correct_answer: key,
+                rubric:         gradeSource.rubric,
+                question_type:  gradeSource.question_type,
+                student_answer: chosenAnswer,
+              },
+              userId,
+              institutionId: session.institution_id,
+            })
+          ).is_correct
+        : exactMatchGrade(chosenAnswer, key);
 
   // Record answer
   const answer = await prisma.sessionAnswer.create({
@@ -299,15 +310,21 @@ export async function submitAnswer(params: {
       question_id:   questionId,
       chosen_answer: chosenAnswer,
       is_correct:    isCorrect,
+      gradable,
       time_taken_ms: timeTakenMs,
       confidence:    params.confidence ?? null,
     },
   });
 
-  recordItemOutcomes([{ questionId, isCorrect }]);
+  // Empirical difficulty is a p-value over real outcomes; an ungradable item has
+  // no outcome, and folding its forced `false` in would make every unkeyed
+  // question look maximally hard.
+  if (gradable) recordItemOutcomes([{ questionId, isCorrect }]);
 
-  // In practice mode, automatically stream AI feedback for incorrect answers
-  if (!isCorrect) {
+  // In practice mode, automatically stream AI feedback for incorrect answers.
+  // Never for an ungradable one: `isCorrect` is false there by construction, and
+  // the tutor would confidently explain a mistake nobody established was made.
+  if (!isCorrect && hasAnswerKey(key)) {
     const session = await prisma.quizSession.findUnique({
       where:  { id: params.sessionId },
       select: { mode: true, user_id: true, institution_id: true },
@@ -327,7 +344,10 @@ export async function submitAnswer(params: {
             {
               sessionId:     params.sessionId,
               questionId:    params.questionId,
-              question:      gradeSource,
+              // `key` rather than `gradeSource.correct_answer`: the guard above
+              // narrowed it to a real string, so the tutor prompt cannot be built
+              // around a null the way the field's type still permits.
+              question:      { ...gradeSource, correct_answer: key },
               chosenAnswer:  params.chosenAnswer,
               userId:        params.userId,
               institutionId: session.institution_id,
@@ -356,7 +376,10 @@ export interface BatchAnswerInput {
 export interface BatchAnswerResult {
   question_id:      string;
   is_correct:       boolean;
-  correct_answer:   string;
+  /** Null for an item with no published answer key; pair with `gradable`. */
+  correct_answer:   string | null;
+  /** False when the item had no key — `is_correct` is then meaningless, not wrong. */
+  gradable:         boolean;
   /**
    * True when the stored answer was kept as-is — i.e. this submission repeated an
    * answer already on file. A submission that CHANGES the answer is not
@@ -442,7 +465,8 @@ export async function submitAnswers(params: {
   });
 
   interface GradeSource {
-    correct_answer: string;
+    /** Null for an imported item whose answer key was never published. */
+    correct_answer: string | null;
     question_text:  string;
     question_type:  string;
     rubric?:        string;
@@ -503,6 +527,9 @@ export async function submitAnswers(params: {
     // afresh, because the text the grader saw is no longer the text on file.
     if (!source || !needsGrading(classify(item))) continue;
     if (!isFreeResponse(source.question_type)) continue;
+    // FAIL-CLOSED: never send an unkeyed item to the grader. It would have
+    // nothing to mark against, and would mark something anyway.
+    if (!hasAnswerKey(source.correct_answer)) continue;
     toGrade.push({
       questionId: item.question_id,
       item: {
@@ -534,6 +561,7 @@ export async function submitAnswers(params: {
     question_id:   string;
     chosen_answer: string;
     is_correct:    boolean;
+    gradable:      boolean;
     time_taken_ms: number;
     confidence:    number | null;
   }[] = [];
@@ -542,6 +570,7 @@ export async function submitAnswers(params: {
     id:            string;
     chosen_answer: string;
     is_correct:    boolean;
+    gradable:      boolean;
     time_taken_ms: number;
     confidence:    number | null;
   }[] = [];
@@ -552,6 +581,7 @@ export async function submitAnswers(params: {
       throw new AppError(404, 'NOT_FOUND', `Question not found: ${item.question_id}`);
     }
     const correctAnswer = source.correct_answer;
+    const gradable = hasAnswerKey(correctAnswer);
 
     const previous = existingByQuestion.get(item.question_id);
     if (previous && classify(item) === 'repeat') {
@@ -559,6 +589,7 @@ export async function submitAnswers(params: {
         question_id:      item.question_id,
         is_correct:       previous.is_correct,
         correct_answer:   correctAnswer,
+        gradable,
         already_answered: true,
       });
       continue;
@@ -567,14 +598,21 @@ export async function submitAnswers(params: {
     // MCQ uses the same rule as `submitAnswer`, so a client grading offline agrees
     // with us. Free-response takes the AI verdict resolved above — the client's
     // offline exact-match guess is overwritten when the batch lands.
+    //
+    // FAIL-CLOSED: an unkeyed item was never sent to the grader, so it has no
+    // verdict to take, and exact-matching against null is not a comparison worth
+    // making. It records false + ungradable and is scored by neither side.
     const isCorrect =
-      aiVerdicts.get(item.question_id) ?? exactMatchGrade(item.chosen_answer, correctAnswer);
+      !gradable || correctAnswer === null
+        ? false
+        : (aiVerdicts.get(item.question_id) ?? exactMatchGrade(item.chosen_answer, correctAnswer));
 
     if (previous) {
       toUpdate.push({
         id:            previous.id,
         chosen_answer: item.chosen_answer,
         is_correct:    isCorrect,
+        gradable,
         time_taken_ms: item.time_taken_ms,
         confidence:    item.confidence ?? null,
       });
@@ -584,6 +622,7 @@ export async function submitAnswers(params: {
         question_id:   item.question_id,
         chosen_answer: item.chosen_answer,
         is_correct:    isCorrect,
+        gradable,
         time_taken_ms: item.time_taken_ms,
         confidence:    item.confidence ?? null,
       });
@@ -593,6 +632,7 @@ export async function submitAnswers(params: {
       question_id:      item.question_id,
       is_correct:       isCorrect,
       correct_answer:   correctAnswer,
+      gradable,
       already_answered: false,
     });
   }
@@ -664,8 +704,30 @@ export async function completeSession(sessionId: string, userId: string) {
     throw new AppError(409, 'CONFLICT', 'Session is already completed');
   }
 
-  const correctCount = session.answers.filter((a: { is_correct: boolean }) => a.is_correct).length;
-  const scorePercent = calculateScorePercent(correctCount, session.total_questions);
+  /**
+   * Scored over the answers that could actually be graded, not over
+   * `total_questions`.
+   *
+   * The two differ only when the paper contained an item with no answer key —
+   * an imported past paper, typically. Scoring such a session out of
+   * `total_questions` would fail a student on a question nothing could mark:
+   * seven of eight correct reads as 87.5% against a 90% gate, and the eighth
+   * was never markable in either direction.
+   *
+   * A session where NOTHING was gradable scores 0 with `gradable: 0`. That is
+   * "no evidence", not "scored zero" — which is why the mastery path checks the
+   * count before recording an attempt.
+   */
+  const score = gradedScore(session.answers);
+  const correctCount = score.correct;
+  const scorePercent = calculateScorePercent(correctCount, score.gradable);
+
+  if (score.skipped > 0) {
+    logger.info(
+      { sessionId, skipped: score.skipped, gradable: score.gradable },
+      'Session contained items with no answer key — excluded from scoring',
+    );
+  }
 
   const startTime = session.started_at.getTime();
   const timeTakenSecs = Math.floor((Date.now() - startTime) / 1000);

@@ -1,5 +1,13 @@
 import { ResourceChunk } from '../../mongo/schemas';
-import { embedQuery, embedTexts } from '@lib/embeddings';
+import {
+  EMBEDDING_DIM,
+  EMBEDDING_MODEL,
+  currentSignature,
+  embedQuery,
+  embedTexts,
+  type EmbeddingSignature,
+} from '@lib/embeddings';
+import logger from '@lib/logger';
 
 /**
  * Retrieval for RAG grounding (reformation Phase 1).
@@ -9,6 +17,83 @@ import { embedQuery, embedTexts } from '@lib/embeddings';
  * and needs no vector database. `cosine`/`rankByCosine` are pure and unit-tested;
  * `retrieveChunks` is the DB-backed wrapper.
  */
+
+// ─── Embedding provenance ─────────────────────────────────────────────────────
+
+/**
+ * The embedding every chunk written before signature tracking was produced by.
+ *
+ * Not a guess: `EMBEDDING_MODEL` has been `text-embedding-004` for the whole life
+ * of the chunk store, so an unstamped chunk IS this. Naming it lets an unstamped
+ * chunk stay usable while that is still the current model, and stop being usable
+ * the moment it isn't — no deploy ordering, no backfill race.
+ */
+export const LEGACY_SIGNATURE: EmbeddingSignature = {
+  model: 'text-embedding-004',
+  dim:   768,
+};
+
+/** The signature fields a stored chunk may carry. Both absent = pre-tracking. */
+export interface SignedChunk {
+  embedding_model?: string | null;
+  embedding_dim?: number | null;
+}
+
+/**
+ * Whether `chunk`'s vector lives in the same space as one embedded with `current`.
+ *
+ * An unstamped chunk is {@link LEGACY_SIGNATURE}; it matches only while that is
+ * still what we embed queries with. So the day the model changes, every legacy
+ * chunk correctly reads as unusable without anything having to be backfilled
+ * first — the fallback closes itself.
+ */
+export function matchesSignature(chunk: SignedChunk, current: EmbeddingSignature): boolean {
+  // `?? null` collapses undefined and null to one case: a chunk written before
+  // provenance tracking carries neither field, and a chunk written by a partial
+  // backfill could carry one.
+  const model = chunk.embedding_model ?? null;
+  const dim = chunk.embedding_dim ?? null;
+
+  if (model === null || dim === null) {
+    return current.model === LEGACY_SIGNATURE.model && current.dim === LEGACY_SIGNATURE.dim;
+  }
+  return model === current.model && dim === current.dim;
+}
+
+/** The subset of `chunks` whose vectors are comparable to `current`. Pure. */
+export function usableChunks<T extends SignedChunk>(
+  chunks: T[],
+  current: EmbeddingSignature = currentSignature(),
+): T[] {
+  return chunks.filter((c) => matchesSignature(c, current));
+}
+
+/**
+ * Drop chunks whose embedding predates the current model, logging once if that
+ * silently emptied the set.
+ *
+ * Returning [] is deliberately the SAME shape as "this resource was never
+ * ingested", which every caller already handles by falling back to ungrounded
+ * generation (`ensureQuestionPool` does `resourceId ? retrieveChunks(...) : []`).
+ * Ranking mismatched vectors instead would take a path nobody has ever seen fail,
+ * and would produce confident nonsense rather than an honest absence.
+ */
+function comparable<T extends SignedChunk>(chunks: T[], resourceId: string): T[] {
+  const usable = usableChunks(chunks);
+  if (usable.length === 0 && chunks.length > 0) {
+    logger.warn(
+      {
+        resourceId,
+        stored: chunks[0]?.embedding_model ?? `${LEGACY_SIGNATURE.model} (unstamped)`,
+        wanted: EMBEDDING_MODEL,
+        dim:    EMBEDDING_DIM,
+        chunks: chunks.length,
+      },
+      'Chunk embeddings do not match the current model — returning ungrounded. Re-ingest this resource.',
+    );
+  }
+  return usable;
+}
 
 /** Cosine similarity of two equal-length vectors. Returns 0 for a zero vector. */
 export function cosine(a: number[], b: number[]): number {
@@ -90,10 +175,13 @@ export async function retrieveChunks(
 ): Promise<RetrievedChunk[]> {
   const all = await ResourceChunk.find(
     { resource_id: resourceId },
-    { text: 1, embedding: 1, page: 1, ordinal: 1 },
+    { text: 1, embedding: 1, page: 1, ordinal: 1, embedding_model: 1, embedding_dim: 1 },
   ).lean();
 
-  const chunks = scopeToPages(all, scope);
+  // Signature first, page window second: `scopeToPages` falls back to the whole
+  // set when a window matches nothing, and that fallback must only ever widen
+  // across chunks we can actually compare.
+  const chunks = scopeToPages(comparable(all, resourceId), scope);
   if (chunks.length === 0) return [];
 
   const queryEmbedding = await embedQuery(query);
@@ -121,11 +209,12 @@ export async function retrieveChunksForQueries(
 ): Promise<RetrievedChunk[][]> {
   if (queries.length === 0) return [];
 
-  const chunks = await ResourceChunk.find(
+  const stored = await ResourceChunk.find(
     { resource_id: resourceId },
-    { text: 1, embedding: 1, page: 1, ordinal: 1 },
+    { text: 1, embedding: 1, page: 1, ordinal: 1, embedding_model: 1, embedding_dim: 1 },
   ).lean();
 
+  const chunks = comparable(stored, resourceId);
   if (chunks.length === 0) return queries.map(() => []);
 
   const rankable = chunks.map((c) => ({
@@ -173,10 +262,11 @@ export async function chapterPassages(
   const passages = new Map<string, RetrievedChunk[]>();
   if (chapters.length === 0) return passages;
 
-  const all = await ResourceChunk.find(
+  const stored = await ResourceChunk.find(
     { resource_id: resourceId },
-    { text: 1, embedding: 1, page: 1, ordinal: 1 },
+    { text: 1, embedding: 1, page: 1, ordinal: 1, embedding_model: 1, embedding_dim: 1 },
   ).lean();
+  const all = comparable(stored, resourceId);
   if (all.length === 0) return passages;
 
   const needRetrieval: ChapterForPassages[] = [];

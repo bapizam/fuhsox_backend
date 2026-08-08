@@ -23,7 +23,8 @@ import { getCount, getEndOfDayTTL, getTodayWAT, incrWithExpiry } from '@lib/redi
 import { downloadFromStorage, extractPdfText, type PdfPage } from '@lib/pdf';
 import { chunkPages, chunkText } from '@lib/chunk';
 import { locateChapterPages } from '@utils/page-ranges';
-import { embedTexts, embeddingsAvailable } from '@lib/embeddings';
+import { currentSignature, embedTexts, embeddingsAvailable } from '@lib/embeddings';
+import { gradedScore } from '@utils/gradability';
 import { retrieveChunks } from '@lib/retrieval';
 import { aiService } from './ai.service';
 import {
@@ -329,13 +330,19 @@ export async function ingestResourceChunks(
 
   const embeddings = await embedTexts(chunks.map((c) => c.text), 'document');
 
+  // Stamped with the embedding that produced them, so retrieval can tell a
+  // comparable vector from one written by a model we no longer query with.
+  const signature = currentSignature();
+
   await ResourceChunk.insertMany(
     chunks.map((c, i) => ({
-      resource_id: resourceId,
-      user_id:     userId,
-      ordinal:     c.ordinal,
-      text:        c.text,
-      embedding:   embeddings[i],
+      resource_id:     resourceId,
+      user_id:         userId,
+      ordinal:         c.ordinal,
+      text:            c.text,
+      embedding:       embeddings[i],
+      embedding_model: signature.model,
+      embedding_dim:   signature.dim,
       ...('page' in c ? { page: c.page } : {}),
     })),
   );
@@ -1056,9 +1063,26 @@ export async function completeMasteryCheck(params: {
     throw new AppError(400, 'VALIDATION_ERROR', 'No answers recorded for this session');
   }
 
-  const correct = session.answers.filter((a) => a.is_correct).length;
-  const scoreFraction = correct / session.total_questions;
+  /**
+   * Scored over gradable answers only (see `utils/gradability`). An imported
+   * past paper can carry items whose answer key was never published, and those
+   * must move neither the numerator nor the denominator — a mastery gate is the
+   * last place that should be cleared, or missed, on an item nothing can mark.
+   */
+  const score = gradedScore(session.answers);
+  const correct = score.correct;
+  const scoreFraction = score.fraction;
   const threshold = await thresholdFor(params.institutionId);
+
+  // No gradable item means no evidence, and an EWMA fed a fabricated 0 would
+  // read as a failed attempt forever after. Refuse rather than record.
+  if (score.gradable === 0) {
+    throw new AppError(
+      400,
+      'VALIDATION_ERROR',
+      'None of the questions in this check had an answer key, so it cannot be scored.',
+    );
+  }
 
   // Per-Bloom breakdown + the concepts actually missed, both read off the cached
   // question docs — no extra generation.

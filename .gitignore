@@ -56,8 +56,9 @@ Thumbs.db
 *.db
 *.db-journal
 
-# ─── Docker ────────────────────────────────────────────────────────────────────
-.dockerignore
+# ─── Local infrastructure ──────────────────────────────────────────────────────
+# Data directories, if you point a local Postgres/Mongo/Redis at the repo.
+/data/
 
 # ─── Uploads (local dev only — use S3 in production) ──────────────────────────
 uploads/

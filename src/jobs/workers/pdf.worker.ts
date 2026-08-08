@@ -59,8 +59,14 @@ export function startPDFWorker() {
           throw new Error('No text could be extracted from the PDF');
         }
 
-        // 3. Send extracted text to Claude for question parsing
-        const questions = await aiService.parseQuestionsFromText(extractedText, institution_id);
+        // 3. Send extracted text to Claude for question parsing.
+        //    `created_by` is threaded through so the import's AI spend is
+        //    attributed to whoever uploaded the paper — it was unlogged before.
+        const questions = await aiService.parseQuestionsFromText(
+          extractedText,
+          institution_id,
+          created_by,
+        );
 
         if (questions.length === 0) {
           throw new Error('No questions could be parsed from the PDF');

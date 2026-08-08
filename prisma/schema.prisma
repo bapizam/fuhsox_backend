@@ -192,7 +192,23 @@ model Question {
   question_text  String         @db.Text
   question_type  QuestionType
   options        Json? // [{ key: "A", text: "..." }, ...]
-  correct_answer String // "A" for MCQ, text for others
+  /// "A" for MCQ, text for others.
+  ///
+  /// NULLABLE since past-paper import: most institutional question papers are
+  /// published without their answer key, and the alternative to null was forcing
+  /// the importer to invent one. An invented answer is indistinguishable from a
+  /// verified one once it is a plain string, which on medical content is the
+  /// worst failure this system could ship.
+  ///
+  /// An item with no key is UNGRADABLE, not wrong — see `utils/gradability`. It
+  /// can still be read, revised from, and answered; it just never contributes
+  /// evidence to the learner model until someone supplies the key.
+  correct_answer String?
+  /// How much to trust `correct_answer` when a model supplied it, 0..1. Null
+  /// means a human entered it (bank upload, admin) — the trusted case. Present
+  /// means it was inferred and is awaiting review, which is what the
+  /// `draft → review → published` status gate is for.
+  answer_confidence Float?
   explanation    String?        @db.Text
   difficulty     Difficulty
   status         QuestionStatus @default(draft)
@@ -297,6 +313,18 @@ model SessionAnswer {
   /// claim — and the gap between the two is the calibration signal, which is both a
   /// real measure and one of the best-evidenced study interventions on its own.
   confidence Int?
+
+  /// Whether the item carried an answer key when this was submitted.
+  ///
+  /// False rows are scored by NEITHER side: `is_correct` stays false so nothing
+  /// can read them as a pass, and `utils/gradability.gradedScore` drops them from
+  /// the denominator so they cannot depress a score either. Defaults true, which
+  /// is what every row written before nullable answer keys was.
+  ///
+  /// Stored rather than re-derived because the key can be filled in later — and
+  /// if it is, a historical attempt must keep the meaning it had when it was
+  /// taken, exactly as `MasteryAttempt.threshold` does.
+  gradable Boolean @default(true)
 
   session QuizSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
 
@@ -567,19 +595,51 @@ model AIUsageLog {
   user_id        String
   institution_id String
   feature        AIFeature
+  /// Input + output. Kept as the historical total so existing reads and the
+  /// budget counters do not change meaning; the split below is additive.
   tokens_used    Int       @default(0)
+  /// Split so cost can be computed at all — input and output differ by 5x on
+  /// Claude and ~8x on Gemini, so a combined total cannot price a call.
+  input_tokens   Int       @default(0)
+  output_tokens  Int       @default(0)
+  /// USD at the rate in `lib/ai-cost` when the call was made.
+  ///
+  /// NULL means the model had no known rate, NOT that the call was free — see
+  /// `estimateCostUsd`. Snapshotted rather than derived on read because rates
+  /// change and a historical row should keep the cost it actually incurred.
+  cost_usd       Float?
   model          String
   created_at     DateTime  @default(now())
 
   @@index([user_id, created_at])
   @@index([institution_id, created_at])
+  @@index([institution_id, feature, created_at])
   @@map("ai_usage_logs")
 }
 
+/// What an AI call was spent ON.
+///
+/// ⚠ Postgres enum members cannot be dropped once added, so a value here is a
+/// permanent commitment — add one only for a durable, distinct feature, never to
+/// label an experiment. That constraint is why `getChapterPrerequisites` stays
+/// under `study_plan`: it is one step of building a plan, not its own product
+/// surface, and its author reasoned about exactly this.
 enum AIFeature {
   question_generation
   quiz_feedback
   study_plan
+  /// Chapter structure extracted from an uploaded resource.
+  syllabus_extraction
+  /// Learning objectives generated for a chapter.
+  objective_generation
+  /// Marking a written answer against a key or rubric.
+  answer_grading
+  /// Micro-lessons written for a misconception.
+  remediation
+  /// Knowledge components + prerequisite edges proposed for a subject.
+  kc_proposal
+  /// Questions extracted from an uploaded paper (PDF/scan import).
+  question_import
 }
 
 model PDFParseJob {

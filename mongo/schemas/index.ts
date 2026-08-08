@@ -287,21 +287,38 @@ export interface IResourceChunk extends Document {
   /** Gemini text-embedding-004 vector (768-dim). Retrieval is brute-force cosine
    *  over a single resource's chunks in Node — no vector DB at this scale. */
   embedding: number[];
+  /**
+   * Which embedding produced `embedding`. Optional because chunks written before
+   * signature tracking carry neither field; `matchesSignature` in lib/retrieval
+   * treats an unstamped chunk as the legacy embedding, which is what it is.
+   *
+   * Without this, changing embedding model leaves every stored vector
+   * incomparable to every new query and NOTHING fails — cosine still returns a
+   * number, the ranking is just meaningless, and mastery questions quietly start
+   * being generated from grounding that doesn't match the chapter.
+   */
+  embedding_model?: string;
+  embedding_dim?: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const ResourceChunkSchema = new Schema<IResourceChunk>(
   {
-    resource_id: { type: String, required: true, index: true },
-    user_id:     { type: String, required: true },
-    ordinal:     { type: Number, required: true },
-    text:        { type: String, required: true },
-    page:        { type: Number },
-    embedding:   { type: [Number], required: true },
+    resource_id:     { type: String, required: true, index: true },
+    user_id:         { type: String, required: true },
+    ordinal:         { type: Number, required: true },
+    text:            { type: String, required: true },
+    page:            { type: Number },
+    embedding:       { type: [Number], required: true },
+    embedding_model: { type: String },
+    embedding_dim:   { type: Number },
   },
   { timestamps: true },
 );
+
+/** Retrieval always loads one resource's chunks, then filters by signature. */
+ResourceChunkSchema.index({ resource_id: 1, embedding_model: 1 });
 
 export const ResourceChunk = model<IResourceChunk>('ResourceChunk', ResourceChunkSchema);
 

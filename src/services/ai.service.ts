@@ -21,7 +21,61 @@ import {
 } from '@utils/mcq';
 import { resolveDiscipline } from '@config/academic';
 import { effectiveState } from '@utils/mastery';
+import { estimateCostUsd } from '@lib/ai-cost';
+import type { AIFeature } from '@prisma/client';
 import logger from '@lib/logger';
+
+// ─── Usage accounting ─────────────────────────────────────────────────────────
+
+/** The fields of an AI result this needs. Structural, so streams fit too. */
+interface UsageSource {
+  input_tokens:  number;
+  output_tokens: number;
+  model:         string;
+}
+
+/**
+ * Record what one AI call cost, against the feature that spent it.
+ *
+ * Was ten near-identical inline `prisma.aIUsageLog.create` blocks, which is how
+ * five of them ended up under the wrong `feature` — syllabus extraction and
+ * objective generation were both filed as `study_plan`, so most of what this
+ * service actually spends money on was invisible in the usage table.
+ *
+ * **Never throws.** By the time this runs the call has been made, the money is
+ * spent, and the caller has an answer in hand; letting an accounting write fail
+ * the request would throw away a paid-for result to record that we paid for it.
+ * A failure here is logged and swallowed, and the AI budget counters (Redis, in
+ * `consumeAIBudget`) are unaffected either way.
+ */
+async function logAiUsage(params: {
+  userId:        string;
+  institutionId: string;
+  feature:       AIFeature;
+  response:      UsageSource;
+}): Promise<void> {
+  const { input_tokens: input, output_tokens: output, model } = params.response;
+
+  try {
+    await prisma.aIUsageLog.create({
+      data: {
+        user_id:        params.userId,
+        institution_id: params.institutionId,
+        feature:        params.feature,
+        tokens_used:    input + output,
+        input_tokens:   input,
+        output_tokens:  output,
+        cost_usd:       estimateCostUsd(model, input, output),
+        model,
+      },
+    });
+  } catch (err) {
+    logger.error(
+      { err, feature: params.feature, model, userId: params.userId },
+      'AI usage logging failed — the call itself succeeded',
+    );
+  }
+}
 
 // ─── Discipline context (reformation — discipline-aware prompts) ───────────────
 //
@@ -142,15 +196,11 @@ export async function generateQuestions(params: {
   // Increment daily counter
   await incrWithExpiry(redisKey, getEndOfDayTTL());
 
-  // Log usage
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'question_generation',
-      tokens_used:    tokensUsed,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'question_generation',
+    response,
   });
 
   // Save to MongoDB AIQuestion collection.
@@ -294,14 +344,11 @@ export async function streamAnswerFeedback(
     });
 
     // Log AI usage
-    await prisma.aIUsageLog.create({
-      data: {
-        user_id:        params.userId,
-        institution_id: params.institutionId,
-        feature:        'quiz_feedback',
-        tokens_used:    result.input_tokens + result.output_tokens,
-        model:          result.model,
-      },
+    await logAiUsage({
+      userId:        params.userId,
+      institutionId: params.institutionId,
+      feature:       'quiz_feedback',
+      response:      result,
     });
 
     // Link feedback to the SessionAnswer record
@@ -338,9 +385,19 @@ export async function streamAnswerFeedback(
 
 // ─── PDF Question Parsing ──────────────────────────────────────────────────────
 
+/**
+ * Extract questions from an uploaded paper.
+ *
+ * `userId` is required for usage accounting: this ran unlogged for its whole
+ * life, so PDF imports — the single largest AI job this service runs, and the
+ * one about to ingest a corpus of past papers — contributed nothing to
+ * `AIUsageLog` at all. Every other AI entry point takes a user; this one taking
+ * only an institution is what let it slip through.
+ */
 export async function parseQuestionsFromText(
   extractedText:  string,
   institutionId:  string,
+  userId:         string,
   courseContext?: string,
 ): Promise<GeneratedQuestion[]> {
   const prompt = `Extract all exam questions from the following text.
@@ -355,6 +412,13 @@ ${extractedText.substring(0, 15000)}`;
     system:     QUESTION_GENERATION_SYSTEM_PROMPT,
     messages:   [{ role: 'user', content: prompt }],
     max_tokens: 8192,
+  });
+
+  await logAiUsage({
+    userId,
+    institutionId,
+    feature:       'question_import',
+    response,
   });
 
   return parseGeneratedQuestions(response.text, 'mcq');
@@ -660,14 +724,11 @@ ${source}`,
     'syllabus structure',
   );
 
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'study_plan',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'syllabus_extraction',
+    response,
   });
 
   return (parsed.chapters ?? [])
@@ -744,14 +805,11 @@ Return ONLY JSON:
     'learning objectives',
   );
 
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'study_plan',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'objective_generation',
+    response,
   });
 
   return (parsed.objectives ?? [])
@@ -928,14 +986,11 @@ Return ONLY JSON:
     'mastery questions',
   );
 
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'question_generation',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'question_generation',
+    response,
   });
 
   return (parsed.questions ?? []).map((raw) =>
@@ -1338,17 +1393,16 @@ export async function getChapterPrerequisites(params: {
       max_tokens: 2048,
     });
 
-    await prisma.aIUsageLog.create({
-      data: {
-        user_id:        params.userId,
-        institution_id: params.institutionId,
-        // Deliberately logged as study_plan rather than a new AIFeature value:
-        // this exists only to order a plan, and `AIFeature` is a Postgres enum
-        // whose members cannot be dropped again if this turns out to be wrong.
-        feature:        'study_plan',
-        tokens_used:    response.input_tokens + response.output_tokens,
-        model:          response.model,
-      },
+    await logAiUsage({
+      userId:        params.userId,
+      institutionId: params.institutionId,
+      // Still study_plan, deliberately. `AIFeature` gained its own values for
+      // syllabus extraction, objectives, grading, remediation and KC proposal —
+      // but this one stands: ordering chapters exists ONLY to build a plan, so
+      // it is a step of that feature rather than a feature of its own, and enum
+      // members cannot be dropped once added.
+      feature:       'study_plan',
+      response,
     });
 
     const parsed = parseJSONResponse<{ edges?: unknown }>(response.text, 'chapter prerequisites');
@@ -1558,14 +1612,11 @@ Format as the specified JSON.`;
       max_tokens: 8192,
     });
 
-    await prisma.aIUsageLog.create({
-      data: {
-        user_id:        params.userId,
-        institution_id: params.institutionId,
-        feature:        'study_plan',
-        tokens_used:    response.input_tokens + response.output_tokens,
-        model:          response.model,
-      },
+    await logAiUsage({
+      userId:        params.userId,
+      institutionId: params.institutionId,
+      feature:       'study_plan',
+      response,
     });
 
     return parseJSONResponse<Record<string, unknown>>(response.text, 'resource study plan');
@@ -1732,14 +1783,11 @@ Return ONLY JSON: { "grades": [{ "index": 0, "is_correct": true, "score": 1, "fe
       grades?: { index?: unknown; is_correct?: unknown; score?: unknown; feedback?: unknown }[];
     }>(response.text, 'answer grades');
 
-    await prisma.aIUsageLog.create({
-      data: {
-        user_id:        params.userId,
-        institution_id: params.institutionId,
-        feature:        'quiz_feedback',
-        tokens_used:    response.input_tokens + response.output_tokens,
-        model:          response.model,
-      },
+    await logAiUsage({
+      userId:        params.userId,
+      institutionId: params.institutionId,
+      feature:       'answer_grading',
+      response,
     });
 
     const byIndex = new Map<number, AnswerGrade>();
@@ -1852,14 +1900,11 @@ Return ONLY JSON:
     'micro-lesson',
   );
 
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'quiz_feedback',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'remediation',
+    response,
   });
 
   const sections = (parsed.sections ?? []).flatMap((raw) => {
@@ -1985,14 +2030,11 @@ Return ONLY JSON:
     edges?:      { from?: unknown; to?: unknown; strength?: unknown }[];
   }>(response.text, 'knowledge components');
 
-  await prisma.aIUsageLog.create({
-    data: {
-      user_id:        params.userId,
-      institution_id: params.institutionId,
-      feature:        'study_plan',
-      tokens_used:    response.input_tokens + response.output_tokens,
-      model:          response.model,
-    },
+  await logAiUsage({
+    userId:        params.userId,
+    institutionId: params.institutionId,
+    feature:       'kc_proposal',
+    response,
   });
 
   const validIds = new Set(params.objectives.map((o) => o.id));

@@ -4,8 +4,11 @@ Goal: a stable `https://…` URL the mobile app reaches from anywhere, replacing
 LAN IP — with **no credit card** anywhere and everything on free tiers.
 
 Written 2026-07-19. Free-tier terms change — verify each provider's current limits.
-For an always-on box later (paid VPS or Oracle), see `hosting-guide-docker-vm.md`;
-the Docker files in this folder deploy there unchanged.
+
+Render builds this repo natively (`npm install` → `prisma` → `tsc`), so there is
+no container image involved. The Docker tooling that once deployed the same app
+to a single VM was removed on 2026-08-08; `git log -- Dockerfile` recovers it if
+that path is ever wanted again. For local databases, see `local-setup.md`.
 
 ---
 
@@ -152,7 +155,11 @@ Render's **free web service sleeps after ~15 min idle**. The first request after
 sleep cold-starts (~30–60 s), and **while asleep the cron schedulers and workers
 don't run** — study reminders won't fire on time. Perfectly fine for testing.
 
-When you go live, either upgrade the Render instance to always-on (~$7/mo), or move
-to the always-on Docker VM path (`hosting-guide-docker-vm.md`) — same app, the
-Dockerfile/compose in this folder are ready. Keep-alive pingers violate most
-free-tier ToS, so don't rely on them.
+When you go live, upgrade the Render instance to always-on (~$7/mo). Keep-alive
+pingers violate most free-tier ToS, so don't rely on them.
+
+A single-VM alternative (paid VPS or Oracle Always Free) used to be documented
+here with a Dockerfile and compose stack. Both were removed on 2026-08-08 now
+that Render is the deployment path — `git log --diff-filter=D -- Dockerfile
+docker-compose.prod.yml` finds the commit that dropped them if that route is
+ever revisited.

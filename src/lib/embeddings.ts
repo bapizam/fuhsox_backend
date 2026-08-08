@@ -15,13 +15,35 @@ import logger from '@lib/logger';
  * a different shape, model, and provider constraint. Sibling module, same style.
  */
 
-const EMBEDDING_MODEL = 'text-embedding-004';
+export const EMBEDDING_MODEL = 'text-embedding-004';
+
+/** Dimensionality `EMBEDDING_MODEL` emits. Stored per chunk so a change is detectable. */
+export const EMBEDDING_DIM = 768;
 
 /** Gemini caps a batch at 100 requests; we chunk our inputs to fit. */
 const MAX_BATCH = 100;
 
 /** How the text will be used — Gemini optimises the vector per task. */
 export type EmbeddingTask = 'document' | 'query';
+
+/**
+ * Which embedding produced a stored vector.
+ *
+ * A cosine score between vectors from two different models is a number, not a
+ * similarity — the ranking it produces is noise, and nothing throws. Stamping
+ * this on every chunk at write time is what lets retrieval REFUSE rather than
+ * silently degrade when the model behind the stored vectors is no longer the
+ * model behind the query.
+ */
+export interface EmbeddingSignature {
+  model: string;
+  dim:   number;
+}
+
+/** The signature new chunks are written with, and queries are embedded with. */
+export function currentSignature(): EmbeddingSignature {
+  return { model: EMBEDDING_MODEL, dim: EMBEDDING_DIM };
+}
 
 /** True when embeddings are usable — callers gate ingestion on this. */
 export function embeddingsAvailable(): boolean {
